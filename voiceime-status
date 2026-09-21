@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -u
 source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
+pid="$(voiceime_pid 2>/dev/null || true)"
 echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
-echo "dictation: $(voiceime_state)  (pid $(voiceime_pid 2>/dev/null || echo -))"
+echo "engine:    ${VOICEIME_ENGINE:-sherpa}"
+echo "state:     $(voiceime_state)  (pid ${pid:--})"
 echo "instances: $(voiceime_pids | wc -l)"
 if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
   echo "output:    Fcitx5 native (ready)"

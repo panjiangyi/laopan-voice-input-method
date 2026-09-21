@@ -1,5 +1,58 @@
-# VoiceIME POC — Ubuntu 中文语音直接输入验证
+# VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
+> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次纠错 + Fcitx5 原生提交。
+> 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
+
+## 推荐安装（日用路径）
+
+适用：Ubuntu 24.04 + GNOME + Fcitx5。当前 PTT 热键监听仍以 X11 为主。
+
+```bash
+# 1. 先构建并安装 Fcitx5 原生桥
+sudo apt-get install -y g++ libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev
+bash native/build.sh
+bash native/install.sh
+fcitx5 -r
+
+# 2. 安装中英双语实时识别后端
+bash scripts/09-setup-sherpa.sh
+
+# 3. 推荐：安装松键后的高精度二次纠错模型
+bash scripts/11-setup-quality.sh
+
+# 4. 安装并启动用户级 systemd 服务
+bash scripts/10-install-service.sh
+
+# 5. 检查
+./voiceime-status
+journalctl --user -u voiceime-ptt -f
+```
+
+### 使用
+
+- **按住右 Alt**：开始说话，实时上屏。
+- **松开右 Alt**：结束本句；如果安装了 FireRedASR2，会自动做第二遍高精度识别并修正已经上屏的文字。
+- `Ctrl+Alt+V`：免手持开始/停止。
+- `Ctrl+Alt+B`：结束当前听写。
+- `./voiceime-reset`：异常时强制清理引擎和录音进程。
+
+### 为什么不再默认使用 Vosk
+
+真实使用中暴露出的三个问题——长时间使用卡死、中英混输差、中文准确率低——都和旧主链路有关。新链路做了这些调整：
+
+1. **Vosk small-cn → Sherpa streaming Paraformer（中英双语）**，解决基础中文和 code-switch 能力不足。
+2. **可选 FireRedASR2 第二遍纠错**：实时结果负责速度，松键后的离线 CTC 结果负责准确率。
+3. **不再每个 partial 都启动一次 `busctl` 子进程**：优先使用一个持久化 Gio D-Bus 连接直达 Fcitx5。
+4. **PTT supervisor 有超时恢复**：最终识别超过 4 秒未回到 idle 时直接重启引擎，而不是整套输入法永久卡住。
+5. **每次听写独立 ASR stream / recorder**，一次异常不会污染下一次听写。
+
+### 体验目标
+
+当前目标是把日常中文与中英混合口述做到“可以替代大部分键盘输入”的 Alpha。是否达到“豆包输入法 80%”必须用同一批真人录音做 A/B 基准，不能只靠主观描述。后续以首字延迟、最终纠错延迟、中文 CER、中英 code-switch WER、连续 100 次 PTT 无卡死率作为验收指标。
+
+---
+
+## Legacy POC documentation
 > 项目代号：VoiceIME POC ｜ 版本 v0.1 ｜ 状态：执行中
 
 ## 核心目标
