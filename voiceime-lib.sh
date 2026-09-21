@@ -51,7 +51,11 @@ voiceime_state() {
 
 voiceime_resume() {
   local pid; pid="$(voiceime_pid)" || return 1
-  kill -USR2 "$pid" 2>/dev/null || kill -CONT "$pid" 2>/dev/null || return 1
+  if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'nerd-dictation'; then
+    kill -CONT "$pid" 2>/dev/null || return 1
+  else
+    kill -USR2 "$pid" 2>/dev/null || return 1
+  fi
 }
 
 voiceime_suspend() {
