@@ -41,7 +41,9 @@ jobs:
           test -n "$manifest"
           echo "Benchmarking $manifest"
           python3 scripts/15-evaluate-samples.py "$manifest" --output-dir benchmark-results
+          python3 scripts/16-tune-streaming.py "$manifest" --output benchmark-results/streaming-tail-sweep.tsv
           cat benchmark-results/report.md
+          cat benchmark-results/streaming-tail-sweep.tsv
 
       - name: Upload benchmark report
         uses: actions/upload-artifact@v4
