@@ -161,7 +161,7 @@ class FinalRecognizer:
 
 
 class LLMCorrector:
-    """Optional third pass: text-level cleanup via a local Qwen server.
+    """Optional third pass: conservative text cleanup via an external corrector.
 
     The corrector is a separate process (see voiceime-corrector + systemd
     unit). voiceime-engine talks to it over HTTP. If the endpoint is
@@ -185,7 +185,7 @@ class LLMCorrector:
         self.endpoint = os.environ.get(
             "VOICEIME_LLM_ENDPOINT", "http://127.0.0.1:19888"
         ).rstrip("/")
-        self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", "25.0"))
+        self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", "2.0"))
         self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "1") == "1"
         self.mode = os.environ.get("VOICEIME_LLM_MODE", "punctuation").lower()
         self._available = False
