@@ -168,6 +168,34 @@ def token_hits(tokens: list[str], hypothesis: str) -> tuple[int, int]:
     return hits, sum(expected.values())
 
 
+PROTECTED_ASCII_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?:[+-]?(?:[A-Za-z0-9]+(?:[._+:/-][A-Za-z0-9]+)*)|[A-Za-z]+)"
+    r"(?![A-Za-z0-9_])"
+)
+
+
+def protected_ascii_units(text: str) -> list[str]:
+    """ASCII words/numbers/code units that a second pass must not mutate."""
+    return [m.group(0).lower() for m in PROTECTED_ASCII_RE.finditer(text)]
+
+
+def choose_hybrid(streaming: str, final: str) -> tuple[str, str]:
+    """Use FireRed only when it preserves technical ASCII content.
+
+    FireRed is strong at Chinese full-context recovery on this project but can
+    severely damage English/code. Streaming output is therefore authoritative
+    for any ASCII semantic units it already recognized.
+    """
+    if not final:
+        return streaming, "streaming-empty-final"
+    before = protected_ascii_units(streaming)
+    after = protected_ascii_units(final)
+    if before != after:
+        return streaming, "streaming-protected-ascii"
+    return final, "fire-red"
+
+
 def read_pcm(path: Path) -> tuple[bytes, float]:
     with wave.open(str(path), "rb") as wf:
         if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != 16000:
@@ -296,6 +324,8 @@ def main() -> int:
         streaming, final, stream_ms, final_ms = recognize(asr, final_asr, pcm)
         sm = metrics(reference, streaming)
         fm = metrics(reference, final)
+        hybrid, hybrid_reason = choose_hybrid(streaming, final)
+        hm = metrics(reference, hybrid)
         delta = fm["content_cer"] - sm["content_cer"]
         verdict = "same"
         if delta < -1e-12:
@@ -309,12 +339,15 @@ def main() -> int:
             "reference": reference,
             "streaming_text": streaming,
             "final_text": final,
+            "hybrid_text": hybrid,
+            "hybrid_reason": hybrid_reason,
             "duration_sec": duration,
             "streaming_ms": stream_ms,
             "final_pass_ms": final_ms,
             "fire_red_effect": verdict,
             "streaming": sm,
             "final": fm,
+            "hybrid": hm,
         }
         rows.append(row)
         print(
@@ -328,10 +361,12 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     streaming_summary = aggregate(rows, "streaming")
     final_summary = aggregate(rows, "final")
+    hybrid_summary = aggregate(rows, "hybrid")
     summary = {
         "manifest": str(args.manifest),
         "streaming": streaming_summary,
         "final": final_summary,
+        "hybrid": hybrid_summary,
         "fire_red": {
             "improved": sum(r["fire_red_effect"] == "improved" for r in rows),
             "same": sum(r["fire_red_effect"] == "same" for r in rows),
@@ -350,13 +385,13 @@ def main() -> int:
     )
 
     fields = [
-        "id", "reference", "streaming_text", "final_text", "fire_red_effect",
-        "streaming_content_cer", "final_content_cer",
-        "streaming_cjk_cer", "final_cjk_cer",
-        "streaming_english_recall", "final_english_recall",
-        "streaming_number_recall", "final_number_recall",
-        "streaming_code_recall", "final_code_recall",
-        "streaming_punct_error", "final_punct_error",
+        "id", "reference", "streaming_text", "final_text", "hybrid_text", "hybrid_reason", "fire_red_effect",
+        "streaming_content_cer", "final_content_cer", "hybrid_content_cer",
+        "streaming_cjk_cer", "final_cjk_cer", "hybrid_cjk_cer",
+        "streaming_english_recall", "final_english_recall", "hybrid_english_recall",
+        "streaming_number_recall", "final_number_recall", "hybrid_number_recall",
+        "streaming_code_recall", "final_code_recall", "hybrid_code_recall",
+        "streaming_punct_error", "final_punct_error", "hybrid_punct_error",
         "duration_sec", "streaming_ms", "final_pass_ms",
     ]
     with (args.output_dir / "results.tsv").open("w", encoding="utf-8", newline="") as fh:
@@ -368,19 +403,27 @@ def main() -> int:
                 "reference": r["reference"],
                 "streaming_text": r["streaming_text"],
                 "final_text": r["final_text"],
+                "hybrid_text": r["hybrid_text"],
+                "hybrid_reason": r["hybrid_reason"],
                 "fire_red_effect": r["fire_red_effect"],
                 "streaming_content_cer": r["streaming"]["content_cer"],
                 "final_content_cer": r["final"]["content_cer"],
+                "hybrid_content_cer": r["hybrid"]["content_cer"],
                 "streaming_cjk_cer": r["streaming"]["cjk_cer"],
                 "final_cjk_cer": r["final"]["cjk_cer"],
+                "hybrid_cjk_cer": r["hybrid"]["cjk_cer"],
                 "streaming_english_recall": r["streaming"]["english_recall"],
                 "final_english_recall": r["final"]["english_recall"],
+                "hybrid_english_recall": r["hybrid"]["english_recall"],
                 "streaming_number_recall": r["streaming"]["number_recall"],
                 "final_number_recall": r["final"]["number_recall"],
+                "hybrid_number_recall": r["hybrid"]["number_recall"],
                 "streaming_code_recall": r["streaming"]["code_recall"],
                 "final_code_recall": r["final"]["code_recall"],
+                "hybrid_code_recall": r["hybrid"]["code_recall"],
                 "streaming_punct_error": r["streaming"]["punct_error_rate"],
                 "final_punct_error": r["final"]["punct_error_rate"],
+                "hybrid_punct_error": r["hybrid"]["punct_error_rate"],
                 "duration_sec": f"{r['duration_sec']:.3f}",
                 "streaming_ms": f"{r['streaming_ms']:.1f}",
                 "final_pass_ms": f"{r['final_pass_ms']:.1f}",
@@ -396,14 +439,14 @@ def main() -> int:
         "",
         f"Samples: **{len(rows)}**",
         "",
-        "| Metric | Streaming | FireRed final |",
-        "|---|---:|---:|",
-        f"| Content CER | {pct(streaming_summary['content_cer'])} | {pct(final_summary['content_cer'])} |",
-        f"| Chinese CER | {pct(streaming_summary['cjk_cer'])} | {pct(final_summary['cjk_cer'])} |",
-        f"| English token recall | {pct(streaming_summary['english_recall'])} | {pct(final_summary['english_recall'])} |",
-        f"| Number token recall | {pct(streaming_summary['number_recall'])} | {pct(final_summary['number_recall'])} |",
-        f"| Code token recall | {pct(streaming_summary['code_recall'])} | {pct(final_summary['code_recall'])} |",
-        f"| Punctuation error rate | {pct(streaming_summary['punct_error_rate'])} | {pct(final_summary['punct_error_rate'])} |",
+        "| Metric | Streaming | FireRed final | Hybrid gate |",
+        "|---|---:|---:|---:|",
+        f"| Content CER | {pct(streaming_summary['content_cer'])} | {pct(final_summary['content_cer'])} | {pct(hybrid_summary['content_cer'])} |",
+        f"| Chinese CER | {pct(streaming_summary['cjk_cer'])} | {pct(final_summary['cjk_cer'])} | {pct(hybrid_summary['cjk_cer'])} |",
+        f"| English token recall | {pct(streaming_summary['english_recall'])} | {pct(final_summary['english_recall'])} | {pct(hybrid_summary['english_recall'])} |",
+        f"| Number token recall | {pct(streaming_summary['number_recall'])} | {pct(final_summary['number_recall'])} | {pct(hybrid_summary['number_recall'])} |",
+        f"| Code token recall | {pct(streaming_summary['code_recall'])} | {pct(final_summary['code_recall'])} | {pct(hybrid_summary['code_recall'])} |",
+        f"| Punctuation error rate | {pct(streaming_summary['punct_error_rate'])} | {pct(final_summary['punct_error_rate'])} | {pct(hybrid_summary['punct_error_rate'])} |",
         "",
         "FireRed effect: "
         f"**{summary['fire_red']['improved']} improved**, "
