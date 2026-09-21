@@ -1,0 +1,31 @@
+id	wav	target_text	actual_text
+S-001	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-001.wav	今天我们先测试一下麦克风，看看中文语音输入能不能稳定识别。	今天我们先测试一下麦克风，看看中文语音输入能不能稳定识别。
+S-002	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-002.wav	我刚才插上了麦克风，现在想用语音来控制电脑输入文字。	我刚才插上了麦克风，现在想用语音来控制电脑输入文字。
+S-003	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-003.wav	这个项目的目标是让我在日常写作和编程的时候，都可以直接说话输入。	这个项目的目标是让我在日常写作和编程的时候，都可以直接说话输入。
+S-004	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-004.wav	请帮我打开终端，然后切换到 laopan voice input method 这个项目目录。	请帮我打开终端，然后切换到 laopan voice input method 这个项目目录。
+S-005	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-005.wav	我希望识别结果不仅中文准确，英文单词、数字、标点和代码变量名也不要乱改。	我希望识别结果不仅中文准确，英文单词、数字、标点和代码变量名也不要乱改。
+S-006	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-006.wav	明天上午十点半，我们一起看一下 pull request 和 GitHub Actions 的结果。	明天上午十点半，我们一起看一下 pull request 和 GitHub Actions 的结果。
+S-007	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-007.wav	这个 API 的 timeout 先设置成两秒，后面再根据延迟数据调整。	这个 API 的 timeout 先设置成两秒，后面再根据延迟数据调整。
+S-008	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-008.wav	Python 脚本读取 wav 文件，然后调用 sherpa onnx 做离线识别。	Python 脚本读取 wav 文件，然后调用 sherpa onnx 做离线识别。
+S-009	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-009.wav	如果用户说 user_id 等于 12345，不要把下划线或者数字吞掉。	如果用户说 user_id 等于 12345，不要把下划线或者数字吞掉。
+S-010	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-010.wav	这个函数叫 updateSession，它负责把临时文本替换成最终文本。	这个函数叫 updateSession，它负责把临时文本替换成最终文本。
+S-011	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-011.wav	二零二六年九月二十一日，版本号是 v1.3.7，价格是 19.99 美元。	二零二六年九月二十一日，版本号是 v1.3.7，价格是 19.99 美元。
+S-012	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-012.wav	请记录三个数字，分别是负十、一点五和三千零八。	请记录三个数字，分别是负十、一点五和三千零八。
+S-013	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-013.wav	订单编号 A B C 横杠 2026 下划线 test，请不要自动改成普通中文。	订单编号 A B C 横杠 2026 下划线 test，请不要自动改成普通中文。
+S-014	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-014.wav	我今天写了大约一千二百字，准确率希望能达到百分之九十九。	我今天写了大约一千二百字，准确率希望能达到百分之九十九。
+S-015	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-015.wav	这个 bug 偶尔出现，大概十次里面会复现两到三次。	这个 bug 偶尔出现，大概十次里面会复现两到三次。
+S-016	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-016.wav	嗯，我想一下，这句话先不要提交，等我确认以后再保存。	嗯，我想一下，这句话先不要提交，等我确认以后再保存。
+S-017	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-017.wav	刚才那段删掉，重新写成：我们需要一个更稳的语音输入流程。	刚才那段删掉，重新写成：我们需要一个更稳的语音输入流程。
+S-018	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-018.wav	我说话的时候可能会停顿，也可能会自我修正，系统要能处理这种情况。	我说话的时候可能会停顿，也可能会自我修正，系统要能处理这种情况。
+S-019	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-019.wav	如果最后识别结果不确定，就保留原文，不要为了通顺强行改写。	如果最后识别结果不确定，就保留原文，不要为了通顺强行改写。
+S-020	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-020.wav	现在我要测试一段比较长的句子，里面包含中文、English words、数字 42，以及一点点停顿。	现在我要测试一段比较长的句子，里面包含中文、English words、数字 42，以及一点点停顿。
+S-021	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-021.wav	打开 VS Code，搜索 FinalRecognizer，然后看一下异常处理有没有覆盖测试。	打开 VS Code，搜索 FinalRecognizer，然后看一下异常处理有没有覆盖测试。
+S-022	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-022.wav	把环境变量 VOICEIME_ENABLE_LLM 设置为零，再重新启动 systemd 用户服务。	把环境变量 VOICEIME_ENABLE_LLM 设置为零，再重新启动 systemd 用户服务。
+S-023	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-023.wav	这条命令是 git commit -m fix voice input safety，不要把横杠删掉。	这条命令是 git commit -m fix voice input safety，不要把横杠删掉。
+S-024	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-024.wav	日志里看到 endpoint triggered，但是最终文本是空字符串。	日志里看到 endpoint triggered，但是最终文本是空字符串。
+S-025	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-025.wav	如果麦克风源切换了，请优先选择 USB 设备，而不是显示器的 monitor source。	如果麦克风源切换了，请优先选择 USB 设备，而不是显示器的 monitor source。
+S-026	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-026.wav	今天下午我想连续录三十条样本，然后用独立的十条样本做验收。	今天下午我想连续录三十条样本，然后用独立的十条样本做验收。
+S-027	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-027.wav	这个输入法需要在浏览器、终端、微信和文档编辑器里面都表现稳定。	这个输入法需要在浏览器、终端、微信和文档编辑器里面都表现稳定。
+S-028	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-028.wav	请把逗号、句号、问号和英文括号都识别出来，不要全部省略。	请把逗号、句号、问号和英文括号都识别出来，不要全部省略。
+S-029	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-029.wav	我喜欢自然一点的输入体验，说完就能看到文字，最好不要等太久。	我喜欢自然一点的输入体验，说完就能看到文字，最好不要等太久。
+S-030	/mnt/data/james/Documents/sidework/laopan-voice-input-method/samples/voice-input-session-20260921-211507/S-030.wav	最后一条样本用于测试收尾，录完以后我们开始跑离线识别评估。	最后一条样本用于测试收尾，录完以后我们开始跑离线识别评估。

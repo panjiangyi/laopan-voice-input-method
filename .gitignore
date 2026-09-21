@@ -5,6 +5,7 @@ build/
 
 # Audio test artifacts (keep .tsv/.txt results, drop wavs)
 *.wav
+samples/
 
 # Build / Python caches
 __pycache__/
