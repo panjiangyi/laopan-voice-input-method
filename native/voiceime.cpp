@@ -7,6 +7,7 @@
 #include <fcitx/surroundingtext.h>
 #include <fcitx-utils/dbus/bus.h>
 #include <fcitx-utils/dbus/objectvtable.h>
+#include <fcitx-utils/log.h>
 #include <fcitx-utils/utf8.h>
 #include <stdexcept>
 #include <string>
@@ -128,31 +129,41 @@ private:
     bool updateImpl(int32_t remove, const std::string &text) {
         auto *ic = instance_->inputContextManager().lastFocusedInputContext();
         if (!active_ || !ic || !ic->hasFocus() || ic->uuid() != target_) {
+            FCITX_WARN() << "VoiceIME: update rejected, focus or session lost";
             active_ = false;
             return false;
         }
         if (remove < 0 || static_cast<size_t>(remove) > inserted_ ||
             remove > 4096 || text.size() > 65536 ||
             (!text.empty() && !fcitx::utf8::validate(text))) {
+            FCITX_WARN() << "VoiceIME: update rejected, bad params remove="
+                         << remove << " text_bytes=" << text.size();
             return false;
         }
 
-        // Once we have a surrounding-text snapshot, every later update must
-        // still point at exactly the text range produced by this session.
-        // Moving the cursor, typing manually, selecting text, or any external
-        // edit invalidates the session and prevents late correction from
-        // deleting unrelated content.
-        if (snapshotValid_ && !snapshotMatches(ic)) {
-            active_ = false;
-            return false;
-        }
-
-        // Without surrounding-text support we cannot prove what BackSpace
-        // would delete. Append-only streaming is allowed, but destructive
-        // corrections fail closed instead of forwarding blind BackSpaces.
-        if (remove && !snapshotValid_) {
-            active_ = false;
-            return false;
+        // Pure appends (remove == 0) are intrinsically safe — they only
+        // commit fresh characters and cannot erase user content even if the
+        // surrounding-text snapshot has drifted while we waited for the LLM.
+        // Skip the snapshot guard for them so late punctuation/space fixes
+        // from the corrector still land.
+        //
+        // Destructive operations (remove > 0) must still match the snapshot
+        // exactly, otherwise we cannot prove what BackSpace would delete and
+        // we fail closed to avoid erasing unrelated user content.
+        if (remove) {
+            if (snapshotValid_ && !snapshotMatches(ic)) {
+                FCITX_WARN() << "VoiceIME: destructive update rejected, "
+                                "snapshot drifted (inserted=" << inserted_
+                             << " text_bytes=" << text.size() << ")";
+                active_ = false;
+                return false;
+            }
+            if (!snapshotValid_) {
+                FCITX_WARN() << "VoiceIME: destructive update rejected, "
+                                "no surrounding-text snapshot";
+                active_ = false;
+                return false;
+            }
         }
 
         if (remove) {
@@ -166,9 +177,11 @@ private:
         inserted_ = inserted_ - remove + fcitx::utf8::length(text);
 
         // Keep our local cache consistent with the changes we initiated.
-        // A real user cursor move/edit will arrive from the frontend and
-        // overwrite this cache before the next update, causing the guard above
-        // to invalidate the session.
+        // Pure-append updates land at whatever cursor the frontend now sees;
+        // the user just finished speaking so cursor movement is unlikely.
+        // The snapshot setText here is best-effort and may be overwritten by
+        // the next frontend tick — that is fine because we only consult it
+        // again on destructive ops above.
         if (snapshotValid_) {
             auto &surrounding = ic->surroundingText();
             const std::string expected = before_ + committed_ + after_;
