@@ -2,14 +2,6 @@ name: Real sample ASR benchmark
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "samples/**"
-      - "voiceime-engine"
-      - "scripts/09-setup-sherpa.sh"
-      - "scripts/11-setup-quality.sh"
-      - "scripts/15-evaluate-samples.py"
-      - ".github/workflows/sample-benchmark.yml"
   pull_request:
     paths:
       - "samples/**"
@@ -18,12 +10,22 @@ on:
       - "scripts/11-setup-quality.sh"
       - "scripts/15-evaluate-samples.py"
 
+concurrency:
+  group: sample-benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache ASR models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: voiceime-asr-models-v1
 
       - name: Install streaming ASR and model
         run: bash scripts/09-setup-sherpa.sh
