@@ -118,6 +118,45 @@ class TextReconciler:
         return True
 
 
+class FinalRecognizer:
+    """Optional high-accuracy second pass using FireRedASR2 CTC."""
+
+    def __init__(self) -> None:
+        self.recognizer = None
+        model_dir = Path(os.environ.get(
+            "VOICEIME_FINAL_MODEL",
+            ROOT / "models" / "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",
+        ))
+        model = model_dir / "model.int8.onnx"
+        tokens = model_dir / "tokens.txt"
+        if not model.exists() or not tokens.exists():
+            log("final ASR model not installed; streaming result will be used")
+            return
+        try:
+            import sherpa_onnx
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_fire_red_asr_ctc(
+                model=str(model),
+                tokens=str(tokens),
+                num_threads=max(1, min(4, (os.cpu_count() or 2) // 2)),
+            )
+            log(f"loaded final FireRedASR2 model from {model_dir}")
+        except Exception as ex:
+            log(f"failed to load final ASR model: {ex!r}")
+            self.recognizer = None
+
+    def transcribe(self, pcm: bytes) -> str:
+        if self.recognizer is None or len(pcm) < SAMPLE_RATE:
+            return ""
+        if len(pcm) & 1:
+            pcm = pcm[:-1]
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        stream = self.recognizer.create_stream()
+        stream.accept_waveform(SAMPLE_RATE, samples)
+        self.recognizer.decode_stream(stream)
+        result = stream.result
+        return (result.text if hasattr(result, "text") else str(result)).strip()
+
+
 class SherpaRecognizer:
     def __init__(self) -> None:
         try:
@@ -251,7 +290,9 @@ def single_instance():
     return fh
 
 
-def run_utterance(asr: SherpaRecognizer, bridge: FcitxBridge) -> None:
+def run_utterance(
+    asr: SherpaRecognizer, final_asr: FinalRecognizer, bridge: FcitxBridge
+) -> None:
     global finish_utterance
     finish_utterance = False
 
@@ -269,6 +310,7 @@ def run_utterance(asr: SherpaRecognizer, bridge: FcitxBridge) -> None:
     )
 
     started = time.monotonic()
+    all_audio = bytearray()
     log("recording")
     try:
         while not finish_utterance and not terminate:
@@ -282,6 +324,7 @@ def run_utterance(asr: SherpaRecognizer, bridge: FcitxBridge) -> None:
                 except BlockingIOError:
                     data = b""
                 if data:
+                    all_audio.extend(data)
                     asr.accept_pcm(stream, data)
                     asr.decode_ready(stream)
                     text = asr.text(stream)
@@ -294,8 +337,13 @@ def run_utterance(asr: SherpaRecognizer, bridge: FcitxBridge) -> None:
     finally:
         tail = stop_recorder(recorder)
         if tail:
+            all_audio.extend(tail)
             asr.accept_pcm(stream, tail)
         final = asr.finalize(stream)
+        refined = final_asr.transcribe(bytes(all_audio))
+        if refined:
+            log(f"second-pass correction chars={len(refined)}")
+            final = refined
         if final:
             reconciler.emit(final, force=True)
         log(f"utterance finished chars={len(reconciler.current)}")
@@ -309,6 +357,7 @@ def main() -> int:
 
     bridge = FcitxBridge()
     asr = SherpaRecognizer()
+    final_asr = FinalRecognizer()
 
     while not terminate:
         log("ready; suspended")
@@ -316,7 +365,7 @@ def main() -> int:
         if terminate:
             break
         try:
-            run_utterance(asr, bridge)
+            run_utterance(asr, final_asr, bridge)
         except Exception as ex:
             log(f"utterance failed: {ex!r}")
             time.sleep(0.05)
