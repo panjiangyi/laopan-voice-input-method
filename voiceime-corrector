@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""VoiceIME corrector — thin wrapper that shells out to `opencode run`.
+
+voiceime-engine hits /v1/chat/completions after each utterance. We pack the
+system prompt + user content into a single message and hand it to
+`opencode run --model <muse-spark> --variant xhigh --format json`. The first
+JSON `text` event is the assistant's reply, which we hand back to
+voiceime-engine in OpenAI chat-completion shape so the engine needs no
+changes.
+
+No local model, no GPU, no venv. Requires only the `opencode` CLI on PATH
+(https://opencode.ai/) with an authenticated provider.
+
+Override the model with VOICEIME_CORRECTOR_MODEL and reasoning effort with
+VOICEIME_CORRECTOR_VARIANT (default: xhigh).
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOST = os.environ.get("VOICEIME_CORRECTOR_HOST", "127.0.0.1")
+PORT = int(os.environ.get("VOICEIME_CORRECTOR_PORT", "19888"))
+MODEL = os.environ.get(
+    "VOICEIME_CORRECTOR_MODEL", "opencode/muse-spark-1.3-contributor-free"
+)
+VARIANT = os.environ.get("VOICEIME_CORRECTOR_VARIANT", "xhigh")
+TIMEOUT = float(os.environ.get("VOICEIME_CORRECTOR_TIMEOUT", "30"))
+OPENCODE_BIN = shutil.which("opencode") or "/mnt/data/james/.opencode/bin/opencode"
+
+
+def log(msg: str) -> None:
+    sys.stderr.write(f"[voiceime-corrector] {msg}\n")
+    sys.stderr.flush()
+
+
+def _extract_text(stdout: str) -> str:
+    """Pull the first assistant text event out of `opencode run --format json`."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "text":
+            continue
+        text = (event.get("part") or {}).get("text")
+        if text:
+            return text.strip()
+    raise RuntimeError(f"no text event in opencode stdout: {stdout[:500]}")
+
+
+def _run_opencode(system: str, user: str, max_tokens: int) -> str:
+    """Invoke `opencode run` and return the assistant's text reply."""
+    if not os.path.exists(OPENCODE_BIN):
+        raise FileNotFoundError(f"opencode binary not found at {OPENCODE_BIN}")
+
+    # opencode run takes a single message string. We front-load the system
+    # prompt so the model treats it as instructions.
+    if system:
+        message = f"{system}\n\n---\n\n{user}"
+    else:
+        message = user
+
+    cmd = [
+        OPENCODE_BIN, "run",
+        "--model", MODEL,
+        "--variant", VARIANT,
+        "--format", "json",
+        "--title", "voiceime-corrector",
+        message,
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT,
+        check=False,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
+        raise RuntimeError(
+            f"opencode exited {proc.returncode}: {' '.join(err)[:400]}"
+        )
+    return _extract_text(proc.stdout)
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "voiceime-corrector/1.0"
+
+    def log_message(self, fmt, *args):
+        log("%s - %s" % (self.address_string(), fmt % args))
+
+    def _send_json(self, status: int, payload) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path != "/health":
+            self._send_json(404, {"error": "not found"})
+            return
+        ok = os.path.exists(OPENCODE_BIN)
+        self._send_json(200 if ok else 503, {
+            "status": "ok" if ok else "opencode-missing",
+            "backend": f"opencode:{MODEL}",
+            "variant": VARIANT,
+            "opencode_bin": OPENCODE_BIN,
+        })
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if path != "/v1/chat/completions":
+            self._send_json(404, {"error": "not found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length else b""
+            req = json.loads(raw or b"{}")
+        except (ValueError, json.JSONDecodeError) as ex:
+            self._send_json(400, {"error": f"bad json: {ex!r}"})
+            return
+
+        messages = req.get("messages") or []
+        system = ""
+        user_parts: list[str] = []
+        for m in messages:
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "system":
+                system = content
+            else:
+                user_parts.append(content)
+        user = "\n".join(user_parts).strip()
+
+        if not user:
+            # No user content → no-op echo so voiceime-engine keeps the
+            # upstream ASR text untouched.
+            self._send_json(200, {
+                "id": "voiceime-corrector-noop",
+                "object": "chat.completion",
+                "model": MODEL,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "stop",
+                }],
+            })
+            return
+
+        try:
+            content = _run_opencode(system, user, int(req.get("max_tokens") or 0))
+        except subprocess.TimeoutExpired:
+            log(f"opencode timeout after {TIMEOUT}s")
+            self._send_json(504, {"error": "opencode timeout"})
+            return
+        except FileNotFoundError as ex:
+            log(f"opencode missing: {ex}")
+            self._send_json(503, {"error": str(ex)})
+            return
+        except (RuntimeError, OSError, json.JSONDecodeError) as ex:
+            log(f"opencode call failed: {ex!r}")
+            self._send_json(502, {
+                "error": {"message": f"opencode failed: {ex!r}"},
+            })
+            return
+
+        self._send_json(200, {
+            "id": "voiceime-corrector",
+            "object": "chat.completion",
+            "model": MODEL,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
+        })
+
+
+def main() -> int:
+    log(f"listening on {HOST}:{PORT}; opencode={OPENCODE_BIN} model={MODEL} variant={VARIANT}")
+    if not os.path.exists(OPENCODE_BIN):
+        log("WARNING: opencode binary not found on PATH; /health will return 503")
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -11,4 +11,30 @@ if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
 else
   echo "output:    Fcitx5 native (bridge unavailable)"
 fi
+corr="${VOICEIME_LLM_ENDPOINT:-http://127.0.0.1:19888}"
+if health=$(curl -fsS --max-time 1 "$corr/health" 2>/dev/null); then
+  backend=$(printf '%s' "$health" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d.get('backend') or d.get('model_dir') or 'unknown')
+except Exception:
+    print('unknown')
+")
+  variant=$(printf '%s' "$health" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d.get('variant') or d.get('reasoning_effort') or '')
+except Exception:
+    pass
+" 2>/dev/null)
+  if [ -n "$variant" ]; then
+    echo "corrector: $corr (ready; $backend, variant=$variant)"
+  else
+    echo "corrector: $corr (ready; $backend)"
+  fi
+else
+  echo "corrector: $corr (unreachable)"
+fi
 echo "mic:       $("$ROOT/voiceime-mic")"

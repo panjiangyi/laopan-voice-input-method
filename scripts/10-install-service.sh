@@ -19,6 +19,7 @@ Restart=on-failure
 RestartSec=1
 Environment=PYTHONUNBUFFERED=1
 Environment=VOICEIME_ENGINE=sherpa
+Environment=VOICEIME_LLM_ENDPOINT=http://127.0.0.1:19888
 
 [Install]
 WantedBy=default.target

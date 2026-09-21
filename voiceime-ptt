@@ -140,7 +140,12 @@ class Engine:
             return
         if proc_state(self.proc.pid) != "T":
             os.kill(self.proc.pid, signal.SIGUSR1)
-            deadline = time.monotonic() + 4
+            # Finalize can take a few seconds when FireRedASR2 second-pass
+            # is enabled (CPU, ~1-2s) and the OpenCode Zen LLM corrector
+            # is running (warm ~7s with xhigh reasoning on Muse Spark 1.3,
+            # cold ~14s). 25s gives margin for both without losing the
+            # last words of an utterance.
+            deadline = time.monotonic() + 25
             while self.alive() and proc_state(self.proc.pid) != "T":
                 if time.monotonic() >= deadline:
                     log("engine finalize timeout; restarting engine")

@@ -1,6 +1,7 @@
 # VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
-> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次纠错 + Fcitx5 原生提交。
+> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次纠错 +
+> OpenCode Zen（Muse Spark 1.3 免费档，xhigh 推理）文本纠错 + Fcitx5 原生提交。
 > 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
 
 ## 推荐安装（日用路径）
@@ -20,18 +21,33 @@ bash scripts/09-setup-sherpa.sh
 # 3. 推荐：安装松键后的高精度二次纠错模型
 bash scripts/11-setup-quality.sh
 
-# 4. 安装并启动用户级 systemd 服务
+# 4. 推荐：松键后走 OpenCode Zen 文本纠错（免费档，识别 vibe coding 这种 2025 词）
+#    先去 https://opencode.ai/ 登录并创建一个 Zen API key（Contributor free tier 即可），
+#    然后：
+export OPENCODE_API_KEY=sk-...
+bash scripts/12-setup-corrector.sh
+bash scripts/13-install-corrector-service.sh
+
+# 5. 安装并启动用户级 systemd 服务
 bash scripts/10-install-service.sh
 
-# 5. 检查
+# 6. 检查
 ./voiceime-status
 journalctl --user -u voiceime-ptt -f
+journalctl --user -u voiceime-corrector -f
+
+> voiceime-corrector 是 ~20MB Python stdlib 进程，转发请求到 OpenCode Zen。
+> 不占 GPU，不下载模型。默认端口 `19888`。被占用时设
+> `VOICEIME_CORRECTOR_PORT=<port>` 重跑 `13-install-corrector-service.sh`，
+> 同步把 `10-install-service.sh` 里的 `VOICEIME_LLM_ENDPOINT` 改成同一端口。
+> 换模型 / 换推理档：覆盖 `VOICEIME_CORRECTOR_ZEN_MODEL` /
+> `VOICEIME_CORRECTOR_ZEN_REASONING`（low/medium/high/xhigh）。
 ```
 
 ### 使用
 
 - **按住右 Alt**：开始说话，实时上屏。
-- **松开右 Alt**：结束本句；如果安装了 FireRedASR2，会自动做第二遍高精度识别并修正已经上屏的文字。
+- **松开右 Alt**：结束本句；如果安装了 FireRedASR2，会自动做第二遍高精度识别并修正已经上屏的文字；如果 OpenCode Zen corrector 在跑，会再过一遍 LLM 文本纠错（同音字、英文单词拼写、标点、识别 vibe coding 这种 2025 后出现的新词）。
 - `Ctrl+Alt+V`：免手持开始/停止。
 - `Ctrl+Alt+B`：结束当前听写。
 - `./voiceime-reset`：异常时强制清理引擎和录音进程。
