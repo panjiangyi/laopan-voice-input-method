@@ -1,0 +1,49 @@
+name: Real sample ASR benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "samples/**"
+      - "voiceime-engine"
+      - "scripts/09-setup-sherpa.sh"
+      - "scripts/11-setup-quality.sh"
+      - "scripts/15-evaluate-samples.py"
+      - ".github/workflows/sample-benchmark.yml"
+  pull_request:
+    paths:
+      - "samples/**"
+      - "voiceime-engine"
+      - "scripts/09-setup-sherpa.sh"
+      - "scripts/11-setup-quality.sh"
+      - "scripts/15-evaluate-samples.py"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install streaming ASR and model
+        run: bash scripts/09-setup-sherpa.sh
+
+      - name: Install FireRedASR2 final model
+        run: bash scripts/11-setup-quality.sh
+
+      - name: Run 30-sample benchmark
+        env:
+          VOICEIME_LLM_ENABLED: "0"
+        run: |
+          manifest="$(find samples -maxdepth 2 -name manifest.tsv -print | sort | tail -1)"
+          test -n "$manifest"
+          echo "Benchmarking $manifest"
+          python3 scripts/15-evaluate-samples.py "$manifest" --output-dir benchmark-results
+          cat benchmark-results/report.md
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceime-real-sample-benchmark
+          path: benchmark-results/
+          retention-days: 30
