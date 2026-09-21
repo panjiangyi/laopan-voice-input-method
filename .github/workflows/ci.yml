@@ -9,14 +9,37 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install test runtime
-        run: sudo apt-get update && sudo apt-get install -y python3-numpy
+      - name: Install test/build runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             python3-numpy             g++             libfcitx5core-dev             libfcitx5utils-dev             libfcitx5config-dev \
+            fcitx5 \
+            python3-gi \
+            dbus-x11
       - name: Python syntax
         run: |
-          python3 -m py_compile voiceime-engine voiceime-ptt tests/test_voiceime.py tests/native_bridge.py
+          python3 -m py_compile             voiceime-engine voiceime-ptt             scripts/08-offline-suite.py             tests/test_voiceime.py tests/test_engine_logic.py             tests/test_llm_corrector.py tests/test_benchmark.py             tests/native_bridge.py
       - name: Shell syntax
         run: |
           bash -n voiceime-lib.sh voiceime-begin voiceime-end voiceime-mic voiceime-reset voiceime-status
           bash -n scripts/*.sh native/*.sh
+      - name: Build native Fcitx bridge
+        run: bash native/build.sh
       - name: Regression tests
         run: python3 -m unittest discover -s tests -v
+      - name: Native Fcitx D-Bus integration
+        run: |
+          bash native/install.sh
+          dbus-run-session -- bash -eu -c '
+            fcitx5 -d
+            ready=0
+            for i in $(seq 1 50); do
+              if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 0.1
+            done
+            test "$ready" = 1
+            python3 tests/native_bridge.py
+          '

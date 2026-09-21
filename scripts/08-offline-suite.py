@@ -1,13 +1,30 @@
 #!/usr/bin/env python3
-"""批量离线 ASR 验证: 跑 PRD 全部 T-001..T-203 用例, 输出对比表"""
-import json
+"""Evaluate the current VoiceIME ASR path with real character error rate.
+
+This replaces the legacy Vosk/set-overlap benchmark. It runs the same default
+recognition stack as voiceime-engine:
+  sherpa-onnx streaming Paraformer -> optional FireRedASR2 final pass
+
+Metrics:
+  - exact match after normalization
+  - Levenshtein character edit distance
+  - CER = edits / reference characters
+
+The script intentionally does not enable the experimental LLM rewriter.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import runpy
 import sys
 import wave
+from pathlib import Path
 
-import vosk
-
-MODEL_DIR = "/mnt/data/james/Documents/sidework/laopan-voice-input-method/models/vosk-model-small-cn-0.22"
-LOG_DIR = "/mnt/data/james/Documents/sidework/laopan-voice-input-method/logs"
+ROOT = Path(__file__).resolve().parents[1]
+ENGINE = runpy.run_path(str(ROOT / "voiceime-engine"))
+SherpaRecognizer = ENGINE["SherpaRecognizer"]
+FinalRecognizer = ENGINE["FinalRecognizer"]
 
 CASES = [
     ("T-001", "你好这是一个测试"),
@@ -24,39 +41,154 @@ CASES = [
 ]
 
 
-def recognize(model, wav_path: str) -> str:
-    rec = vosk.KaldiRecognizer(model, 16000)
-    with wave.open(wav_path, "rb") as wf:
-        while True:
-            data = wf.readframes(4000)
-            if not data:
-                break
-            rec.AcceptWaveform(data)
-    return json.loads(rec.FinalResult()).get("text", "")
+def normalize(text: str) -> str:
+    # CER is about recognition content, not formatting. Keep symbols that are
+    # part of code/numbers; remove only whitespace and sentence punctuation.
+    cosmetic = set("，。！？；、“”‘’,!?;")
+    return "".join(
+        ch.lower()
+        for ch in text
+        if not ch.isspace() and ch not in cosmetic
+    )
 
 
-def main():
-    model = vosk.Model(MODEL_DIR)
+def edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance with O(min(len(a), len(b))) memory."""
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            curr.append(min(
+                curr[-1] + 1,
+                prev[j] + 1,
+                prev[j - 1] + (ca != cb),
+            ))
+        prev = curr
+    return prev[-1]
+
+
+def cer(reference: str, hypothesis: str) -> tuple[int, float]:
+    ref = normalize(reference)
+    hyp = normalize(hypothesis)
+    dist = edit_distance(ref, hyp)
+    return dist, dist / max(len(ref), 1)
+
+
+def read_pcm16_mono_16k(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as wf:
+        if wf.getnchannels() != 1:
+            raise ValueError(f"{path}: expected mono WAV")
+        if wf.getsampwidth() != 2:
+            raise ValueError(f"{path}: expected 16-bit PCM WAV")
+        if wf.getframerate() != 16000:
+            raise ValueError(f"{path}: expected 16000 Hz WAV")
+        return wf.readframes(wf.getnframes())
+
+
+def recognize_current(asr, final_asr, pcm: bytes) -> tuple[str, str]:
+    stream = asr.create_stream()
+    chunk_bytes = 3200 * 2  # 100 ms @ 16kHz, int16 mono
+    for start in range(0, len(pcm), chunk_bytes):
+        asr.accept_pcm(stream, pcm[start:start + chunk_bytes])
+        asr.decode_ready(stream)
+    streaming = asr.finalize(stream).strip()
+
+    final = streaming
+    try:
+        refined = final_asr.transcribe(pcm)
+        if refined:
+            final = refined
+    except Exception as ex:
+        print(
+            f"WARN: FireRed second pass failed, using streaming result: {ex!r}",
+            file=sys.stderr,
+        )
+    return streaming, final
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--wav-dir",
+        type=Path,
+        default=ROOT / "logs",
+        help="directory containing T-xxx_16k.wav files",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "logs" / "current_asr_cer.tsv",
+    )
+    args = parser.parse_args()
+
+    print("Loading current VoiceIME recognizers...")
+    asr = SherpaRecognizer()
+    final_asr = FinalRecognizer()
+
     rows = []
-    for cid, expected in CASES:
-        wav = f"{LOG_DIR}/{cid}_16k.wav"
-        text = recognize(model, wav)
-        exp_norm = expected.replace(" ", "").lower()
-        got_norm = text.replace(" ", "").lower()
-        exact = exp_norm == got_norm
-        # 简单包含判断: 期望中的每个汉字是否出现在结果中
-        overlap = sum(1 for ch in set(exp_norm) if ch in got_norm) / max(len(set(exp_norm)), 1)
-        rows.append((cid, expected, text, exact, overlap))
-        print(f"{cid}: 期望={expected}")
-        print(f"      识别={text}")
-        print(f"      精确={exact} 字符重合率={overlap:.0%}")
-        print()
+    total_edits = 0
+    total_ref_chars = 0
+    exact_count = 0
 
-    n_exact = sum(1 for r in rows if r[3])
-    n_total = len(rows)
-    avg_overlap = sum(r[4] for r in rows) / n_total
-    print(f"=== 汇总: 精确匹配 {n_exact}/{n_total}, 平均字符重合率 {avg_overlap:.0%} ===")
+    for cid, expected in CASES:
+        wav = args.wav_dir / f"{cid}_16k.wav"
+        if not wav.exists():
+            print(f"{cid}: SKIP missing {wav}")
+            continue
+
+        pcm = read_pcm16_mono_16k(wav)
+        streaming, final = recognize_current(asr, final_asr, pcm)
+        distance, rate = cer(expected, final)
+        ref_len = len(normalize(expected))
+        exact = normalize(expected) == normalize(final)
+
+        total_edits += distance
+        total_ref_chars += ref_len
+        exact_count += int(exact)
+        rows.append({
+            "case": cid,
+            "expected": expected,
+            "streaming": streaming,
+            "final": final,
+            "edit_distance": distance,
+            "ref_chars": ref_len,
+            "cer": f"{rate:.6f}",
+            "exact": "1" if exact else "0",
+        })
+
+        print(f"{cid}: expected={expected}")
+        print(f"       streaming={streaming}")
+        print(f"       final={final}")
+        print(f"       edit_distance={distance} CER={rate:.2%} exact={exact}")
+
+    if not rows:
+        print("No WAV cases found; nothing evaluated.", file=sys.stderr)
+        return 2
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=[
+                "case", "expected", "streaming", "final",
+                "edit_distance", "ref_chars", "cer", "exact",
+            ],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    micro_cer = total_edits / max(total_ref_chars, 1)
+    print()
+    print(
+        f"SUMMARY cases={len(rows)} exact={exact_count}/{len(rows)} "
+        f"micro_CER={micro_cer:.2%}"
+    )
+    print(f"TSV: {args.output}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -106,6 +106,7 @@ class LLMCorrectorTests(unittest.TestCase):
             {"choices": [{"message": {"content": "今天，天气很好。"}}]},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "2.0",
                 "VOICEIME_LLM_MODE": "punctuation",
@@ -127,6 +128,7 @@ class LLMCorrectorTests(unittest.TestCase):
             {"choices": [{"message": {"content": "今天气象很好"}}]},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "punctuation",
@@ -141,6 +143,7 @@ class LLMCorrectorTests(unittest.TestCase):
             {"choices": [{"message": {"content": "我们部署项目。"}}]},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "punctuation",
@@ -156,6 +159,7 @@ class LLMCorrectorTests(unittest.TestCase):
             {"choices": [{"message": {"content": "把 GitLab PR merge 到 main。"}}]},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "punctuation",
@@ -166,11 +170,34 @@ class LLMCorrectorTests(unittest.TestCase):
                 "把 GitHub PR merge 到 main",
             )
 
+    def test_safe_mode_protects_numeric_and_code_symbols(self):
+        c = Corrector.__new__(Corrector)
+        c.mode = "punctuation"
+
+        unsafe = [
+            ("版本是1.5", "版本是15"),
+            ("温度是-10", "温度是10"),
+            ("用C++实现", "用C实现"),
+            ("字段叫user_id", "字段叫userid"),
+            ("访问http://a.com", "访问httpa.com"),
+        ]
+        for original, candidate in unsafe:
+            with self.subTest(original=original, candidate=candidate):
+                self.assertFalse(c._accept_candidate(original, candidate))
+
+        self.assertTrue(
+            c._accept_candidate(
+                "这个 API endpoint 要 review 一下",
+                "这个API endpoint要 review 一下。",
+            )
+        )
+
     def test_aggressive_mode_is_explicit_opt_in(self):
         with StubServer([
             {"choices": [{"message": {"content": "今天气象很好"}}]},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "aggressive",
@@ -181,7 +208,8 @@ class LLMCorrectorTests(unittest.TestCase):
     def test_unreachable_endpoint_is_safe_fallback(self):
         dead_port = _free_port()
         with _with_env({
-            "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{dead_port}",
+            "VOICEIME_LLM_ENABLED": "1",
+                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{dead_port}",
             "VOICEIME_LLM_TIMEOUT": "0.2",
         }):
             dead = Corrector()
@@ -203,6 +231,7 @@ class LLMCorrectorTests(unittest.TestCase):
             {"choices": [{"message": {"content": "   "}}]},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
             }):
@@ -215,6 +244,7 @@ class LLMCorrectorTests(unittest.TestCase):
             {"no_choices_here": True},
         ]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
             }):
@@ -225,6 +255,7 @@ class LLMCorrectorTests(unittest.TestCase):
     def test_empty_text_input_skips_request(self):
         with StubServer([]) as srv:
             with _with_env({
+                "VOICEIME_LLM_ENABLED": "1",
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
             }):

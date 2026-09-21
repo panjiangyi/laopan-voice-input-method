@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """VoiceIME push-to-talk supervisor.
 
-Default engine is voiceime-engine (sherpa-onnx bilingual streaming ASR).
-Set VOICEIME_ENGINE=vosk to use the legacy nerd-dictation backend.
+The Sherpa engine is a long-lived event-driven process:
+  SIGUSR2 = start recording
+  SIGUSR1 = stop current recording
+
+Final FireRed/LLM refinement is asynchronous inside the engine, so release
+never blocks this xinput event loop and the next press can start immediately.
 """
 import errno
 import fcntl
@@ -18,8 +22,11 @@ ROOT = os.path.dirname(os.path.realpath(__file__))
 SHERPA_ENGINE = os.path.join(ROOT, "voiceime-engine")
 ND = os.path.join(ROOT, "nerd-dictation", "nerd-dictation")
 VOSK_MODEL = os.path.join(ROOT, "models", "vosk-model-small-cn-0.22")
-COOKIE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "voiceime-%d.cookie" % os.getuid())
-LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "voiceime-ptt.lock")
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+COOKIE = os.path.join(RUNTIME, "voiceime-%d.cookie" % os.getuid())
+LOCK = os.path.join(RUNTIME, "voiceime-ptt.lock")
+READY = os.path.join(RUNTIME, "voiceime-engine.ready")
+STATE = os.path.join(RUNTIME, "voiceime-engine.state")
 ENGINE_MODE = os.environ.get("VOICEIME_ENGINE", "sherpa").lower()
 KEYCODE = int(os.environ.get("VOICEIME_PTT_KEYCODE", "108"))
 
@@ -91,17 +98,41 @@ class Engine:
 
     def start(self):
         self.stop()
-        cmd = self.command()
+        for path in (READY, STATE):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         log("starting %s engine" % ENGINE_MODE)
-        self.proc = subprocess.Popen(cmd, env=child_env(), start_new_session=True)
+        self.proc = subprocess.Popen(
+            self.command(), env=child_env(), start_new_session=True
+        )
+
+        if ENGINE_MODE == "vosk":
+            # Legacy backend still uses SIGSTOP readiness.
+            for _ in range(300):
+                if not self.alive():
+                    return False
+                if proc_state(self.proc.pid) == "T":
+                    return True
+                time.sleep(0.1)
+            self.stop()
+            return False
+
         for _ in range(300):
             if not self.alive():
                 log("engine exited during startup (rc=%s)" % self.proc.returncode)
                 return False
-            if proc_state(self.proc.pid) == "T":
+            try:
+                with open(READY, "r", encoding="utf-8") as fh:
+                    ready_pid = int(fh.read().strip())
+            except (OSError, ValueError):
+                ready_pid = -1
+            if ready_pid == self.proc.pid:
                 log("engine ready pid=%d" % self.proc.pid)
                 return True
-            time.sleep(0.1)
+            time.sleep(0.05)
+
         log("engine did not become ready")
         self.stop()
         return False
@@ -113,7 +144,6 @@ class Engine:
         if self.proc.poll() is None:
             try:
                 os.killpg(pid, signal.SIGTERM)
-                os.killpg(pid, signal.SIGCONT)
             except OSError:
                 pass
             deadline = time.monotonic() + 2
@@ -131,28 +161,22 @@ class Engine:
         self.proc = None
 
     def resume(self):
-        if self.alive() and proc_state(self.proc.pid) == "T":
+        if not self.alive():
+            return
+        if ENGINE_MODE == "vosk":
             os.kill(self.proc.pid, signal.SIGCONT)
-            log("recording")
+        else:
+            os.kill(self.proc.pid, signal.SIGUSR2)
+        log("recording requested")
 
     def suspend(self):
         if not self.alive():
             return
-        if proc_state(self.proc.pid) != "T":
+        try:
             os.kill(self.proc.pid, signal.SIGUSR1)
-            # Finalize can take a few seconds when FireRedASR2 second-pass
-            # is enabled (CPU, ~1-2s) and the OpenCode Zen LLM corrector
-            # is running (warm ~7s with xhigh reasoning on Muse Spark 1.3,
-            # cold ~14s). 25s gives margin for both without losing the
-            # last words of an utterance.
-            deadline = time.monotonic() + 25
-            while self.alive() and proc_state(self.proc.pid) != "T":
-                if time.monotonic() >= deadline:
-                    log("engine finalize timeout; restarting engine")
-                    self.stop()
-                    return
-                time.sleep(0.01)
-            log("suspended")
+            log("stop requested")
+        except ProcessLookupError:
+            pass
 
 
 def single_instance():
@@ -186,10 +210,11 @@ def main():
     def shutdown(_sig=None, _frm=None):
         stopping["now"] = True
         engine.stop()
-        try:
-            os.unlink(COOKIE)
-        except OSError:
-            pass
+        for path in (COOKIE, READY, STATE):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         log("stopped")
         raise SystemExit(0)
 
@@ -239,9 +264,8 @@ def main():
                 if not held:
                     continue
                 held = False
+                # Never wait here. This is what keeps the next press responsive.
                 engine.suspend()
-                if not engine.alive():
-                    engine.start()
 
         watcher.wait()
         if stopping["now"]:
