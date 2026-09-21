@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Stable streaming ASR engine for VoiceIME.
+"""VoiceIME streaming ASR engine.
 
-Default backend: sherpa-onnx streaming Paraformer (Chinese + English).
-The process is kept warm. SIGCONT starts one utterance; SIGUSR1 finalizes it
-and the process SIGSTOPs itself. SIGTERM exits cleanly.
+Realtime path:
+  SIGUSR2 -> start recording immediately
+  SIGUSR1 -> stop recording and commit the streaming final text
 
-Text is delivered to the existing Fcitx5 addon over one persistent D-Bus
-connection. No subprocess is spawned per partial result.
+FireRedASR2 + optional LLM refinement run asynchronously after the streaming
+result is committed. The engine stays responsive to the next utterance while
+refinement is in flight. Session-aware Fcitx updates make late results fail
+closed once the user edits/moves the cursor or a new utterance begins.
 """
 from __future__ import annotations
 
 import fcntl
 import json
 import os
+import secrets
 import select
 import signal
 import subprocess
@@ -20,11 +23,13 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 MODEL_DIR = Path(os.environ.get(
     "VOICEIME_SHERPA_MODEL",
     ROOT / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
@@ -34,10 +39,14 @@ CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
 MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
 MIC_SCRIPT = ROOT / "voiceime-mic"
-LOCK = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "voiceime-engine.lock"
+LOCK = RUNTIME / "voiceime-engine.lock"
+STATE_FILE = RUNTIME / "voiceime-engine.state"
+READY_FILE = RUNTIME / "voiceime-engine.ready"
 
 terminate = False
 finish_utterance = False
+start_utterance = False
+current_session = ""
 
 
 def log(msg: str) -> None:
@@ -45,7 +54,16 @@ def log(msg: str) -> None:
     sys.stderr.flush()
 
 
+def set_state(state: str) -> None:
+    try:
+        STATE_FILE.write_text(state + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 class FcitxBridge:
+    """Session-aware Fcitx D-Bus client."""
+
     def __init__(self) -> None:
         self._gio = None
         self._bus = None
@@ -54,47 +72,63 @@ class FcitxBridge:
             from gi.repository import Gio, GLib  # type: ignore
             self._gio = (Gio, GLib)
             self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            log("using persistent Gio D-Bus connection")
         except Exception as ex:
             log(f"Gio unavailable, using busctl fallback: {ex!r}")
 
-    def _call(self, method: str, remove: int = 0, text: str = "") -> bool:
-        if self._bus is not None and self._gio is not None:
-            Gio, GLib = self._gio
-            params = None if method == "Begin" else GLib.Variant("(is)", (remove, text))
-            reply = self._bus.call_sync(
-                "org.voiceime.Input",
-                "/org/voiceime/Input",
-                "org.voiceime.Input1",
-                method,
-                params,
-                GLib.VariantType("(b)"),
-                Gio.DBusCallFlags.NONE,
-                1200,
-                None,
-            )
-            return bool(reply.unpack()[0])
+    def _gio_call(self, method: str, params):
+        Gio, GLib = self._gio
+        reply = self._bus.call_sync(
+            "org.voiceime.Input",
+            "/org/voiceime/Input",
+            "org.voiceime.Input1",
+            method,
+            params,
+            GLib.VariantType("(b)"),
+            Gio.DBusCallFlags.NONE,
+            1200,
+            None,
+        )
+        return bool(reply.unpack()[0])
 
-        cmd = [
-            "busctl", "--user", "--timeout=1", "call",
-            "org.voiceime.Input", "/org/voiceime/Input",
-            "org.voiceime.Input1", method,
-        ]
-        if method != "Begin":
-            cmd += ["is", str(remove), text]
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)
+    def begin(self, session: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "BeginSession", GLib.Variant("(s)", (session,))
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "BeginSession", "s", session,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
         return out.returncode == 0 and out.stdout.strip() == "b true"
 
-    def begin(self) -> bool:
-        return self._call("Begin")
-
-    def update(self, remove: int, text: str) -> bool:
-        return self._call("Update", remove, text)
+    def update(self, session: str, remove: int, text: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "UpdateSession",
+                GLib.Variant("(sis)", (session, remove, text)),
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "UpdateSession", "sis",
+                session, str(remove), text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
 
 
 class TextReconciler:
-    def __init__(self, bridge: FcitxBridge) -> None:
+    def __init__(self, bridge: FcitxBridge, session: str) -> None:
         self.bridge = bridge
+        self.session = session
         self.current = ""
         self.last_emit = 0.0
 
@@ -114,7 +148,7 @@ class TextReconciler:
         if not force and now - self.last_emit < PARTIAL_MIN_INTERVAL:
             return True
         remove, append = self.patch(self.current, text)
-        if not self.bridge.update(remove, append):
+        if not self.bridge.update(self.session, remove, append):
             return False
         self.current = text
         self.last_emit = now
@@ -161,23 +195,14 @@ class FinalRecognizer:
 
 
 class LLMCorrector:
-    """Optional third pass: conservative text cleanup via an external corrector.
-
-    The corrector is a separate process (see voiceime-corrector + systemd
-    unit). voiceime-engine talks to it over HTTP. If the endpoint is
-    unreachable, slow, or returns empty, this class falls back to the
-    upstream ASR text and never raises — PTT is the priority.
-    """
+    """Optional conservative text cleanup."""
 
     SYSTEM_PROMPT = (
-        "你是语音输入的保守型后处理器。你的首要原则是：绝不能把已经正确的识别文本改错。\n"
-        "默认只允许做两类事情：1）添加或调整标点；2）调整中文与英文之间的空格。\n"
-        "禁止修改、删除、增加任何中文汉字、数字、英文字母或代码标识符。"
-        "禁止删除口头禅，禁止把口语改写成书面语，禁止同义改写，禁止猜测同音字。"
-        "如果原文已经自然，原样返回。\n"
-        "示例：\n"
-        "输入：这个 API endpoint 要 review 一下然后 merge 到 main\n"
-        "输出：这个 API endpoint 要 review 一下，然后 merge 到 main。\n"
+        "你是语音输入的保守型后处理器。首要原则：绝不能把正确文本改错。\n"
+        "只允许添加或调整自然语言标点，以及中英文边界空格。\n"
+        "禁止修改、删除、增加任何汉字、数字、英文字母、代码标识符、"
+        "数字中的小数点/正负号、程序符号或 URL 符号。"
+        "禁止删除口头禅、同义改写、猜测同音字。原文自然时原样返回。\n"
         "只输出最终文本，不要解释，不要加引号。"
     )
 
@@ -186,34 +211,87 @@ class LLMCorrector:
             "VOICEIME_LLM_ENDPOINT", "http://127.0.0.1:19888"
         ).rstrip("/")
         self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", "2.0"))
-        self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "1") == "1"
+        self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "0") == "1"
         self.mode = os.environ.get("VOICEIME_LLM_MODE", "punctuation").lower()
         self._available = False
         if not self.enabled:
-            log("LLM corrector disabled by VOICEIME_LLM_ENABLED=0")
+            log("LLM corrector disabled")
             return
         try:
             with urllib.request.urlopen(
                 f"{self.endpoint}/health", timeout=1.0
             ) as resp:
-                if resp.status == 200:
-                    self._available = True
-                    log(f"LLM corrector reachable at {self.endpoint}")
-                else:
-                    log(f"LLM corrector /health returned {resp.status}")
+                self._available = resp.status == 200
         except (urllib.error.URLError, OSError, TimeoutError) as ex:
-            log(f"LLM corrector unreachable at {self.endpoint}: {ex!r}")
+            log(f"LLM corrector unreachable: {ex!r}")
 
     @staticmethod
-    def _lexical_content(text: str) -> str:
-        """Strip punctuation/whitespace while preserving semantic characters.
+    def _is_cjk(ch: str) -> bool:
+        if not ch:
+            return False
+        cp = ord(ch)
+        return (
+            0x3400 <= cp <= 0x4DBF
+            or 0x4E00 <= cp <= 0x9FFF
+            or 0xF900 <= cp <= 0xFAFF
+        )
 
-        In safe mode, an LLM result is accepted only when this sequence is
-        byte-for-byte identical to the ASR result. That allows punctuation
-        and spacing improvements but blocks hallucinated word substitutions,
-        deletions, additions, English rewrites, and homophone guesses.
+    @classmethod
+    def _semantic_signature(cls, text: str) -> str:
+        """Remove only genuinely cosmetic punctuation/spacing.
+
+        ASCII program/number punctuation is preserved. This means safe mode
+        rejects changes such as 1.5->15, -10->10, C++->C and
+        user_id->userid.
         """
-        return "".join(ch for ch in text if ch.isalnum())
+        chars = list(text)
+        out: list[str] = []
+        cosmetic = set("，。！？；、“”‘’")
+        ascii_sentence = set(",!?;")
+
+        def prev_nonspace(i: int) -> str:
+            j = i - 1
+            while j >= 0 and chars[j].isspace():
+                j -= 1
+            return chars[j] if j >= 0 else ""
+
+        def next_nonspace(i: int) -> str:
+            j = i + 1
+            while j < len(chars) and chars[j].isspace():
+                j += 1
+            return chars[j] if j < len(chars) else ""
+
+        for i, ch in enumerate(chars):
+            prev_ch = prev_nonspace(i)
+            next_ch = next_nonspace(i)
+            if ch.isspace():
+                # Only CJK<->ASCII boundary spacing is cosmetic. Spaces
+                # between ASCII tokens can be meaningful in commands/code.
+                if (
+                    (cls._is_cjk(prev_ch) and next_ch.isascii() and next_ch.isalnum())
+                    or (prev_ch.isascii() and prev_ch.isalnum() and cls._is_cjk(next_ch))
+                ):
+                    continue
+                out.append(" ")
+                continue
+            if ch in cosmetic:
+                if (
+                    prev_ch.isascii() and prev_ch.isalnum()
+                    and next_ch.isascii() and next_ch.isalnum()
+                ):
+                    out.append(ch)
+                continue
+            if ch in ascii_sentence:
+                if (
+                    prev_ch.isascii() and prev_ch.isalnum()
+                    and next_ch.isascii() and next_ch.isalnum()
+                ):
+                    out.append(ch)
+                continue
+            # Keep '.', ':', '/', '_', '-', '+', brackets and every other
+            # ASCII symbol because they can carry numeric/code semantics.
+            out.append(ch)
+        return "".join(out)
 
     def _accept_candidate(self, original: str, candidate: str) -> bool:
         if candidate == original:
@@ -222,7 +300,7 @@ class LLMCorrector:
             return False
         if self.mode in ("rewrite", "aggressive"):
             return True
-        return self._lexical_content(original) == self._lexical_content(candidate)
+        return self._semantic_signature(original) == self._semantic_signature(candidate)
 
     def correct(self, text: str) -> str:
         if not self._available or not text or not text.strip():
@@ -245,21 +323,17 @@ class LLMCorrector:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read())
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as ex:
-            log(f"LLM correction failed: {ex!r}")
-            return text
-        try:
             content = payload["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, TypeError) as ex:
-            log(f"LLM correction: malformed response: {ex!r}")
+        except (
+            urllib.error.URLError, OSError, TimeoutError, ValueError,
+            KeyError, IndexError, TypeError,
+        ) as ex:
+            log(f"LLM correction failed: {ex!r}")
             return text
         if not content:
             return text
         if not self._accept_candidate(text, content):
-            log(
-                "LLM correction rejected by lexical guard "
-                f"mode={self.mode} chars={len(text)}->{len(content)}"
-            )
+            log("LLM candidate rejected by semantic guard")
             return text
         return content
 
@@ -316,7 +390,7 @@ class SherpaRecognizer:
 
     def finalize(self, stream) -> str:
         stream.accept_waveform(
-            SAMPLE_RATE, np.zeros(int(0.35 * SAMPLE_RATE), dtype=np.float32)
+            SAMPLE_RATE, np.zeros(int(0.20 * SAMPLE_RATE), dtype=np.float32)
         )
         try:
             stream.input_finished()
@@ -354,7 +428,7 @@ def stop_recorder(proc: subprocess.Popen) -> bytes:
             proc.send_signal(signal.SIGINT)
         except ProcessLookupError:
             pass
-    deadline = time.monotonic() + 0.6
+    deadline = time.monotonic() + 0.12
     if proc.stdout is not None:
         while time.monotonic() < deadline:
             try:
@@ -366,11 +440,11 @@ def stop_recorder(proc: subprocess.Popen) -> bytes:
                 continue
             if proc.poll() is not None:
                 break
-            time.sleep(0.01)
+            time.sleep(0.005)
     if proc.poll() is None:
         proc.kill()
     try:
-        proc.wait(timeout=1)
+        proc.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
         proc.kill()
     return bytes(extra)
@@ -381,10 +455,16 @@ def on_finish(_sig, _frame) -> None:
     finish_utterance = True
 
 
+def on_start(_sig, _frame) -> None:
+    global start_utterance
+    start_utterance = True
+
+
 def on_term(_sig, _frame) -> None:
-    global terminate, finish_utterance
+    global terminate, finish_utterance, start_utterance
     terminate = True
     finish_utterance = True
+    start_utterance = True
 
 
 def single_instance():
@@ -397,20 +477,65 @@ def single_instance():
     return fh
 
 
+def refine_async(
+    session: str,
+    base_text: str,
+    pcm: bytes,
+    final_asr: FinalRecognizer,
+    llm: LLMCorrector,
+) -> None:
+    global current_session
+    if session != current_session:
+        return
+
+    refined = ""
+    try:
+        refined = final_asr.transcribe(pcm)
+    except Exception as ex:
+        # The streaming result has already been committed. A failing second
+        # pass must never suppress or erase it.
+        log(f"second-pass ASR failed; keeping streaming result: {ex!r}")
+
+    final = refined or base_text
+    if session != current_session:
+        return
+
+    try:
+        final = llm.correct(final)
+    except Exception as ex:
+        log(f"LLM refinement failed; keeping ASR result: {ex!r}")
+
+    if session != current_session or final == base_text:
+        return
+
+    remove, append = TextReconciler.patch(base_text, final)
+    try:
+        bridge = FcitxBridge()
+        if not bridge.update(session, remove, append):
+            log("late refinement rejected: session/range changed")
+        else:
+            log(f"late refinement applied chars={len(base_text)}->{len(final)}")
+    except Exception as ex:
+        log(f"late refinement delivery failed: {ex!r}")
+
+
 def run_utterance(
     asr: SherpaRecognizer,
     final_asr: FinalRecognizer,
     llm: LLMCorrector,
     bridge: FcitxBridge,
+    executor: ThreadPoolExecutor,
 ) -> None:
-    global finish_utterance
+    global finish_utterance, current_session
     finish_utterance = False
+    session = secrets.token_hex(12)
+    current_session = session
 
-    if not bridge.begin():
-        log("no focused Fcitx input context")
+    if not bridge.begin(session):
+        log("no focused Fcitx input context or native bridge is outdated")
         return
 
-    reconciler = TextReconciler(bridge)
+    reconciler = TextReconciler(bridge, session)
     stream = asr.create_stream()
     recorder = start_recorder(resolve_mic())
     assert recorder.stdout is not None
@@ -421,7 +546,8 @@ def run_utterance(
 
     started = time.monotonic()
     all_audio = bytearray()
-    log("recording")
+    set_state("recording")
+    log(f"recording session={session[:8]}")
     try:
         while not finish_utterance and not terminate:
             if time.monotonic() - started > MAX_UTTERANCE_SEC:
@@ -439,7 +565,7 @@ def run_utterance(
                     asr.decode_ready(stream)
                     text = asr.text(stream)
                     if text and not reconciler.emit(text):
-                        log("Fcitx focus changed; ending utterance")
+                        log("Fcitx session invalidated; ending utterance")
                         break
             if recorder.poll() is not None:
                 log("recorder exited unexpectedly")
@@ -449,41 +575,82 @@ def run_utterance(
         if tail:
             all_audio.extend(tail)
             asr.accept_pcm(stream, tail)
-        final = asr.finalize(stream)
-        refined = final_asr.transcribe(bytes(all_audio))
-        if refined:
-            log(f"second-pass correction chars={len(refined)}")
-            final = refined
-        if final:
-            corrected = llm.correct(final)
-            if corrected != final:
-                log(f"LLM refinement chars={len(final)}->{len(corrected)}")
-                final = corrected
-            reconciler.emit(final, force=True)
-        log(f"utterance finished chars={len(reconciler.current)}")
+
+        # Commit the streaming final result synchronously. This is the
+        # guaranteed fallback even if FireRed or LLM refinement fails later.
+        base_text = reconciler.current
+        try:
+            streaming_final = asr.finalize(stream).strip()
+            if streaming_final:
+                base_text = streaming_final
+        except Exception as ex:
+            log(f"streaming finalize failed; keeping last partial: {ex!r}")
+
+        if base_text and base_text != reconciler.current:
+            if not reconciler.emit(base_text, force=True):
+                log("streaming final rejected because target changed")
+                base_text = reconciler.current
+
+        set_state("suspended")
+
+        if base_text and all_audio:
+            # Do not block PTT on FireRed/LLM. One worker serializes the heavy
+            # second pass; stale queued jobs self-cancel via current_session.
+            executor.submit(
+                refine_async,
+                session,
+                base_text,
+                bytes(all_audio),
+                final_asr,
+                llm,
+            )
+        log(f"utterance captured chars={len(base_text)}")
 
 
 def main() -> int:
+    global start_utterance
     _lock = single_instance()
     signal.signal(signal.SIGUSR1, on_finish)
+    signal.signal(signal.SIGUSR2, on_start)
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGINT, on_term)
+
+    try:
+        READY_FILE.unlink(missing_ok=True)
+        STATE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     bridge = FcitxBridge()
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
     llm = LLMCorrector()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceime-final")
 
-    while not terminate:
-        log("ready; suspended")
-        os.kill(os.getpid(), signal.SIGSTOP)
-        if terminate:
-            break
+    READY_FILE.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    set_state("suspended")
+    log("ready")
+
+    try:
+        while not terminate:
+            while not start_utterance and not terminate:
+                signal.pause()
+            if terminate:
+                break
+            start_utterance = False
+            try:
+                run_utterance(asr, final_asr, llm, bridge, executor)
+            except Exception as ex:
+                set_state("suspended")
+                log(f"utterance failed: {ex!r}")
+    finally:
         try:
-            run_utterance(asr, final_asr, llm, bridge)
-        except Exception as ex:
-            log(f"utterance failed: {ex!r}")
-            time.sleep(0.05)
+            READY_FILE.unlink(missing_ok=True)
+            STATE_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+        executor.shutdown(wait=False, cancel_futures=True)
+
     log("stopped")
     return 0
 
