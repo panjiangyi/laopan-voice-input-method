@@ -3,7 +3,8 @@ set -u
 source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
 pid="$(voiceime_pid 2>/dev/null || true)"
 echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
-echo "engine:    ${VOICEIME_ENGINE:-sherpa}"\necho "llm:       enabled=${VOICEIME_LLM_ENABLED:-0} mode=${VOICEIME_LLM_MODE:-punctuation} timeout=${VOICEIME_LLM_TIMEOUT:-2.0}s"
+echo "engine:    ${VOICEIME_ENGINE:-sherpa}"
+echo "llm:       enabled=${VOICEIME_LLM_ENABLED:-0} mode=${VOICEIME_LLM_MODE:-punctuation} timeout=${VOICEIME_LLM_TIMEOUT:-2.0}s"
 echo "state:     $(voiceime_state)  (pid ${pid:--})"
 echo "instances: $(voiceime_pids | wc -l)"
 if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
