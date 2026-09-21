@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Print the PulseAudio/PipeWire source to record from.
+# Priority: current default (if it is a USB mic) > any USB mic > current default > any input.
+# Monitor sources are never candidates (they are named alsa_output.*.monitor).
+set -u
+
+sources() { pactl list short sources 2>/dev/null | awk '{print $2}' | grep -E '^alsa_input\.'; }
+
+default="$(pactl get-default-source 2>/dev/null || true)"
+
+case "$default" in
+  *usb*|*USB*) sources | grep -qxF "$default" && { echo "$default"; exit 0; } ;;
+esac
+
+usb="$(sources | grep -iE 'usb' | head -1)"
+[ -n "$usb" ] && { echo "$usb"; exit 0; }
+
+if [ -n "$default" ] && sources | grep -qxF "$default"; then echo "$default"; exit 0; fi
+
+sources | head -1

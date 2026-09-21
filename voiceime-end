@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Ctrl+Alt+B -- stop dictating and type out what was recognized.
+set -u
+source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
+
+voiceime_lock
+voiceime_suspend
+voiceime_unlock

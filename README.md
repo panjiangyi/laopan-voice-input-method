@@ -1,0 +1,217 @@
+# VoiceIME POC — Ubuntu 中文语音直接输入验证
+
+> 项目代号：VoiceIME POC ｜ 版本 v0.1 ｜ 状态：执行中
+
+## 核心目标
+
+在 Ubuntu 上验证：**用户聚焦任意输入框 → 说中文 → 识别文字不经复制粘贴，直接进入当前输入框**。
+
+## 环境
+
+| 项目 | 值 |
+|---|---|
+| OS | Ubuntu 24.04.4 LTS |
+| 桌面 | GNOME (ubuntu) |
+| 显示协议 | X11 (`DISPLAY=:1`) |
+| 日常输入 | Fcitx5 原生文字提交（Rime 可保持启用） |
+| 旧版 POC 输入工具 | xdotool |
+| ASR | Vosk（Python API） |
+| 模型 | vosk-model-small-cn-0.22 |
+| 采样率 | 16000 Hz（Vosk 中文模型要求） |
+
+## 目录结构
+
+```
+laopan-voice-input-method/
+├── nerd-dictation/          # 上游项目，含本地音频/信号/按键修复
+├── models/
+│   └── vosk-model-small-cn-0.22/
+├── scripts/
+│   ├── 01-setup.sh          # 环境准备（apt + pip + 模型下载）
+│   ├── 02-asr-test.sh       # 验证录音+中文识别（结果输出到屏幕）
+│   ├── 03-direct-input.sh   # 验证直接输入当前焦点窗口（核心）
+│   ├── 04-latency-suite.sh  # 跑 PRD 测试用例并记录延迟
+│   ├── 05-keyboard-shortcut.sh  # 配置 GNOME 快捷键 (P1)
+│   ├── 06-app-compat.sh     # 应用兼容性测试
+│   └── lib.sh               # 共享配置
+└── logs/                    # 测试结果
+```
+
+## 快速开始
+
+### 0. 真人语音测试（一键入口，推荐）
+
+```bash
+bash scripts/00-user-test.sh
+```
+
+依次运行：识别测试 → 直接输入测试 → 11 个延迟用例，全程只需说话+按回车。
+
+### 1. 环境准备（一次性）
+
+```bash
+bash scripts/01-setup.sh
+```
+
+会执行：
+- `sudo apt install xdotool unzip curl pulseaudio-utils`
+- `pip3 install --user vosk`
+- 下载并解压 `vosk-model-small-cn-0.22`（约 42MB）到 `models/`
+
+### 2. 验证中文识别（录音 → 识别 → 输出到屏幕）
+
+```bash
+bash scripts/02-asr-test.sh
+```
+
+### 3. 验证直接输入（核心验证点）
+
+```bash
+bash scripts/03-direct-input.sh
+```
+
+先点击目标输入框获得焦点，然后说话，识别文字应直接进入输入框。
+
+### 4. 跑测试用例 + 延迟记录
+
+```bash
+bash scripts/04-latency-suite.sh          # 全部 11 个用例
+bash scripts/04-latency-suite.sh 1 5      # 只跑 1-5
+```
+
+### 5. 快捷键（P1）
+
+```bash
+bash scripts/05-keyboard-shortcut.sh
+```
+
+### 6. 应用兼容性（P1）
+
+```bash
+bash scripts/06-app-compat.sh
+```
+
+## 日常使用：按住右 Alt 说话（PTT）
+
+日常服务通过本项目的 Fcitx5 插件直接提交 Unicode，仍然边说边输入。
+GTK 输入框通过 surrounding-text 接口修正文字；终端通过输入法接口接收退格。
+不再用 xdotool 逐个映射中文字，也不使用剪贴板。
+目标程序需要连接 Fcitx5；如果输入焦点丢失，停止本次上屏。
+
+插件源码在 `native/`。本机已安装；重新编译/安装时：
+
+```bash
+# 需要 g++、libfcitx5core-dev、libfcitx5utils-dev、libfcitx5config-dev
+bash native/build.sh
+bash native/install.sh
+# 安装后重启 Fcitx5，再启动 voiceime-ptt 服务
+```
+
+安装脚本写入用户目录 `~/.local/share/fcitx5/addon/voiceime.conf`，引用
+项目的 `build/libvoiceime.so`。移动项目后需要重新安装。插件使用当前用户的
+D-Bus 会话，不需要 root。接口依据 [Fcitx5 InputContext API](https://github.com/fcitx/fcitx5/blob/5.1.7/src/lib/fcitx/inputcontext.h)。
+
+```bash
+systemctl --user enable --now voiceime-ptt   # 已配置，登录自动启动
+./voiceime-status                            # 看守护进程 / 听写状态 / 当前麦克风
+./voiceime-reset                             # 出问题时全部停掉
+```
+
+| 操作 | 行为 |
+|---|---|
+| **按住右 Alt** | 录音 + 边说边上屏；**松开**即停止并输出最后一段 |
+| Ctrl+Alt+V | 免手持切换：按一下开始，再按一下停止 |
+| Ctrl+Alt+B | 停止并上屏 |
+
+### 设计
+
+- **只允许一个 nerd-dictation 进程。** `begin` 会把自己的 PID 写进公共 cookie
+  (`/tmp/nerd-dictation.cookie`)，第二次 `begin` 直接覆盖它，第一个实例就变成
+  没人能通知到的孤儿——按 N 次热键就留 N 个实例，每个约 260MB 且各占一路麦克风。
+- 所以进程由 `voiceime-ptt` 守护进程独占，用信号切换状态，不再反复 begin/end：
+
+  | 信号 | 效果 |
+  |---|---|
+  | `SIGCONT` | 开始录音（`parec` 起来） |
+  | `SIGUSR1` | 冲刷文字 → 关掉 `parec` → 进程自己 `SIGSTOP` |
+
+  空闲时进程是 `T`（停止）状态：**0% CPU、不占麦克风**，但模型留在内存里
+  （约 260MB），所以按下键 ~100ms 就能录，不用每次重载模型（~1-3s，会吞掉开头几个字）。
+- **按键来源是 `xinput test-xi2 --root`**：GNOME 自己的快捷键只有按下事件、也绑不了
+  单独的修饰键，做不了「按住说话」。右 Alt = keycode 108（`xmodmap -pke | grep Alt_R`），
+  换布局时用 `VOICEIME_PTT_KEYCODE` 覆盖。自动重复的按下事件会被忽略。
+- **忽略 XTEST 合成按键**：上屏时 `xdotool --clearmodifiers` 会产生修饰键松开/恢复
+  事件，这些事件不能当作真人的 PTT 操作。文字修正的退格也会清除修饰键，避免变成
+  Alt+BackSpace 等应用快捷键。仍然保留边说边输入。
+  日常服务已改用 Fcitx5；这些防护继续用于旧版 xdotool 测试路径。
+- **及时读取积压音频**：每轮读取当前可用数据，保留不足完整 PCM 采样的碎片。
+  日常服务每 20ms 检查一次输入，避免较慢的识别/输出让录音积压到松键才处理。
+- **暂停在主循环处理**：信号只记录请求，不在信号处理器中再次调用 Vosk 或启动
+  按键输出。暂停前停止并读完录音缓冲，回收录音子进程，再冲刷最后的文字。
+- **独立状态文件**：日常服务使用 `$XDG_RUNTIME_DIR/voiceime-<uid>.cookie`
+  （无运行目录时使用 `/tmp`），与手动测试的默认 cookie 隔离。
+- **麦克风每次按键重新解析**（`voiceime-mic`）：优先当前默认输入（若是 USB）→ 任意 USB
+  输入 → 当前默认 → 任意输入。换了 USB 麦克风或重新插拔导致设备名变化时，
+  守护进程会用新设备重启听写进程（那一次按键会慢 1-3s）。
+
+### 文件
+
+| 文件 | 作用 |
+|---|---|
+| `voiceime-ptt` | 守护进程：持有唯一听写进程 + 监听右 Alt |
+| `voiceime-mic` | 解析该用哪个麦克风（优先 USB） |
+| `voiceime-lib.sh` | 共用：单实例锁、状态查询、信号收发 |
+| `voiceime-begin` / `voiceime-end` | Ctrl+Alt+V / Ctrl+Alt+B |
+| `voiceime-status` / `voiceime-reset` | 查看状态 / 全部停掉 |
+| `~/.config/systemd/user/voiceime-ptt.service` | 随图形会话自启，异常自动重启 |
+
+> 右 Alt 仍然是普通 Alt 键，按住时其它程序也会当成 Alt。若不想要这个副作用，可以把它
+> 映射掉：`xmodmap -e 'keycode 108 = VoidSymbol'`（xinput 读的是映射前的 keycode，PTT 不受影响）。
+
+## 手动使用（原版 nerd-dictation）
+
+```bash
+# 开始听写（模型目录用绝对路径）
+/mnt/data/james/Documents/sidework/laopan-voice-input-method/nerd-dictation/nerd-dictation begin \
+    --vosk-model-dir /mnt/data/james/Documents/sidework/laopan-voice-input-method/models/vosk-model-small-cn-0.22 \
+    --sample-rate 16000 \
+    --defer-output
+
+# 说话...
+
+# 结束听写（触发识别并输入当前窗口）
+/mnt/data/james/Documents/sidework/laopan-voice-input-method/nerd-dictation/nerd-dictation end
+```
+
+## 技术说明
+
+- `end` 命令只是 touch 一个 cookie 文件，后台 `begin` 进程检测到后执行最终识别并上屏。
+- `--defer-output`：说话过程中不上屏，结束时一次性输入（适合短句测试）。
+- 不使用时 `cancel` 命令可丢弃本次录音。
+- Vosk 中文模型（small-cn-0.22）要求 16kHz 采样率。
+- xdotool 输入基于 XTEST，**仅 X11 可用**；Wayland 需 ydotool（需要 root 服务）。
+
+## 已知问题
+
+1. **GNOME/mutter 程序化焦点不稳定**：自动化测试需 `windowactivate`+点击组合；真人场景由用户手动聚焦，不受影响。
+2. **xdotool 需 LD_LIBRARY_PATH 包装**（源码编译版）：已提供 `~/.local/bin/xdotool` 包装脚本。
+3. **Vosk small 模型中英混合识别差**（24-58% 重合率）；短/中句可用（80%+）。
+4. **声学回环（扬声器→mic）降质**：回环测试识别率低于真人语音，真人测试为准。
+5. **xdotool 仅 X11**：Wayland 需 ydotool（root 服务），POC 限定 X11。
+6. **fcitx5 兼容性待测**：fcitx 激活态下的直接输入需真人语音确认。
+
+完整结论见 `POC-REPORT.md`（结论 B：POC 部分通过，先完成真人语音验证再二开）。
+
+## 测试记录
+
+- 回归检查：`python3 -m unittest discover -s tests -v`（不录音、不向桌面打字）。
+- 2026-09-08 修复验证：隔离 X11 桌面中，以 16kHz 录音重放、真实 Vosk 和 xdotool
+  连续测试 3 次即时上屏，约 1 秒出现首段文字；按住 Alt 的中文退格修正通过。
+  此项不替代当前麦克风的真人语音验收。
+- 后续原生输入验证：Fcitx5 + GTK4 连续 3 次实时识别上屏通过；首段文字约
+  1 秒出现；VTE/Bash 终端按住 Alt 的中文输入与修正通过。原生接口测试还覆盖
+  焦点丢失、拒绝删除本次听写之前的文字，源码见 `tests/native_bridge.py`。
+  耗时日志只记录字符数，不保存识别内容，可用 `journalctl --user -u voiceime-ptt` 查看。
+
+- 见 `logs/` 下的 `latency_results_*.tsv` 与 `app_compat_*.tsv`。
+- POC 报告：`POC-REPORT.md`。

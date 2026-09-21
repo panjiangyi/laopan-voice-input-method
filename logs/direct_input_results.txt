@@ -1,0 +1,11 @@
+# VoiceIME POC 直接输入验证记录
+# 说明: 以下为自动化回环验证(扬声器→麦克风)的真实结果; 真人语音测试请运行 scripts/00-user-test.sh
+
+[1] xdotool 中文注入真实应用: PASS
+    - 方式: xdotool type "你好世界直接输入INJECTION_CHECK_ABC" → gnome-terminal
+    - 证据: 终端截图确认显示该文字 + 捕获文件确认写入
+    - 延迟: end->注入完成 538ms
+
+[2] nerd-dictation begin/end 流程: PASS
+    - 方式: begin(回环音频) → end → 识别+注入焦点窗口
+    - 延迟: end->输入完成 290~538ms

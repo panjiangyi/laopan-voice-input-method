@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -u
+source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
+echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
+echo "dictation: $(voiceime_state)  (pid $(voiceime_pid 2>/dev/null || echo -))"
+echo "instances: $(voiceime_pids | wc -l)"
+if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
+  echo "output:    Fcitx5 native (ready)"
+else
+  echo "output:    Fcitx5 native (bridge unavailable)"
+fi
+echo "mic:       $("$ROOT/voiceime-mic")"

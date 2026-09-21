@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Emergency: kill every dictation process and stray recorder.
+# Also stops the push-to-talk daemon, unless --keep-service is given (which is
+# what the unit's ExecStopPost uses, to avoid recursing into systemctl stop).
+set -u
+source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
+
+if [ "${1:-}" != "--keep-service" ]; then
+  systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
+  pkill -u "$(id -u)" -f -- "^[^ ]*python[0-9.]* $ROOT/voiceime-ptt" 2>/dev/null || true
+fi
+
+voiceime_lock
+voiceime_kill_all
+voiceime_unlock
+echo "voiceime: all stopped"

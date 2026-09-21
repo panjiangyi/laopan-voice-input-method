@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Ctrl+Alt+V -- hands-free toggle (start talking / stop and type it out).
+# Push-to-talk on Alt_R is handled by the voiceime-ptt daemon, not by this.
+set -u
+source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
+
+voiceime_lock
+case "$(voiceime_state)" in
+  recording) voiceime_suspend ;;
+  suspended) voiceime_resume ;;
+  none|starting) voiceime_ensure_daemon && voiceime_resume ;;
+esac
+voiceime_unlock

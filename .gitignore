@@ -1,0 +1,22 @@
+# Regenerable / large artifacts (re-downloaded or rebuilt by scripts)
+models/
+build/
+.omo/
+
+# Audio test artifacts (keep .tsv/.txt results, drop wavs)
+*.wav
+
+# Build / Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Backup files
+*.bak
+*.orig
+*~
+
+# Runtime / local state
+/tmp/
+*.cookie
+*.log
