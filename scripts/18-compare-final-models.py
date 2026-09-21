@@ -97,6 +97,16 @@ def recognizers():
         use_itn=True,
     )
 
+    zipformer = ROOT / "models/sherpa-onnx-zipformer-zh-en-2023-11-22"
+    yield "zipformer-offline-zh-en", sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=str(zipformer / "encoder-epoch-34-avg-19.onnx"),
+        decoder=str(zipformer / "decoder-epoch-34-avg-19.onnx"),
+        joiner=str(zipformer / "joiner-epoch-34-avg-19.onnx"),
+        tokens=str(zipformer / "tokens.txt"),
+        num_threads=threads,
+        decoding_method="greedy_search",
+    )
+
 
 def main() -> int:
     p = argparse.ArgumentParser()
