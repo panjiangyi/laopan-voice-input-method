@@ -71,6 +71,15 @@ def child_env():
     return env
 
 
+def proc_state(pid):
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    return data[data.rindex(b")") + 2:data.rindex(b")") + 3].decode()
+
+
 class Engine:
     def __init__(self):
         self.proc = None
@@ -104,13 +113,7 @@ class Engine:
             for _ in range(300):
                 if not self.alive():
                     return False
-                try:
-                    with open("/proc/%d/stat" % self.proc.pid, "rb") as fh:
-                        data = fh.read()
-                    state = data[data.rindex(b")") + 2:data.rindex(b")") + 3].decode()
-                except OSError:
-                    state = None
-                if state == "T":
+                if proc_state(self.proc.pid) == "T":
                     return True
                 time.sleep(0.1)
             self.stop()
