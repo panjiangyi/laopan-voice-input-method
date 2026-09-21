@@ -19,17 +19,17 @@ die()  { printf 'build-and-start: %s\n' "$*" >&2; exit 1; }
 # Collect all correction choices in one place. Environment variables remain
 # the non-interactive interface for automation; a terminal gets friendly
 # prompts with conservative defaults.
-LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
+LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 
 if [ -t 0 ]; then
   step "Configure AI correction"
-  read -r -p "Enable AI correction after each utterance? [y/N] " answer
-  case "${answer:-N}" in
-    [Yy]*) LLM_ENABLED=1 ;;
-    *) LLM_ENABLED=0 ;;
+  read -r -p "Enable AI correction after each utterance? [Y/n] " answer
+  case "${answer:-Y}" in
+    [Nn]*) LLM_ENABLED=0 ;;
+    *) LLM_ENABLED=1 ;;
   esac
 
   if [ "$LLM_ENABLED" = 1 ]; then

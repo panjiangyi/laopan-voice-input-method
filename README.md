@@ -14,7 +14,7 @@
 ./deploy.sh
 ```
 
-脚本会询问是否启用一句话结束后的 AI 纠错。启用时可继续选择：
+脚本默认启用一句话结束后的 AI 纠错；运行中回答 `n` 可关闭。启用时可继续选择：
 
 - `punctuation`：只调整标点和中英文空格，默认推荐。
 - `aggressive`：允许修正错字和英文词，可能改变原意。
@@ -37,7 +37,8 @@ bash scripts/09-setup-sherpa.sh
 # 3. 可选：安装松键后的二次识别模型（默认关闭，先用真人录音 A/B）
 bash scripts/11-setup-quality.sh
 
-# 4. 可选：DeepSeek 后处理（默认关闭；安全模式只允许标点/空格）
+# 4. DeepSeek 后处理（默认开启；安全模式只允许标点/空格）
+#    在 .env 里设 VOICEIME_LLM_ENABLED=0 可关闭
 #    在项目根目录创建权限为 600 的 .env：
 #    DEEPSEEK_API_KEY='...'
 #    DEEPSEEK_BASE_URL='https://api.deepseek.com/anthropic'
@@ -60,7 +61,7 @@ journalctl --user -u voiceime-corrector -f
 ### 使用
 
 - **按住右 Alt**：开始说话，实时上屏。
-- **松开右 Alt**：结束本句。FireRedASR2 和 LLM 后处理默认关闭；本机真人样本中 FireRed 的中英混合结果更差，只应用 `VOICEIME_FINAL_ENABLED=1` 显式开启做 A/B。若开启 LLM，默认 `punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文。
+- **松开右 Alt**：结束本句。FireRedASR2 默认关闭（本机真人样本中 FireRed 的中英混合结果更差，只应用 `VOICEIME_FINAL_ENABLED=1` 显式开启做 A/B）。LLM 后处理默认开启，`punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文；想要更激进的纠错请设 `VOICEIME_LLM_MODE=aggressive`，想要完全关闭设 `VOICEIME_LLM_ENABLED=0`。
 - 屏幕提示：录音时在当前活动显示器下方居中显示动态声波；AI 后处理显示“纠错中”，结束后短暂显示“纠错完成”“纠错失败”或“纠错超时”。提示窗不会获取键盘焦点。
 - `Ctrl+Alt+V`：免手持开始/停止。
 - `Ctrl+Alt+B`：结束当前听写。

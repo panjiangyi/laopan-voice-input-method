@@ -262,7 +262,7 @@ class LLMCorrector:
         self.api_key = os.environ.get("DEEPSEEK_API_KEY", "")
         self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
         self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", os.environ.get("DEEPSEEK_TIMEOUT", "10")))
-        self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "0") == "1"
+        self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "1") == "1"
         self.mode = os.environ.get("VOICEIME_LLM_MODE", "punctuation").lower()
         self.last_status = "disabled"
         self._available = bool(self.api_key and self.base_url)
