@@ -103,23 +103,80 @@ def _with_env(values: dict):
 class LLMCorrectorTests(unittest.TestCase):
     def test_probe_then_correct_sends_expected_payload(self):
         with StubServer([
-            {"choices": [{"message": {"content": "今天气象很好"}}]},
+            {"choices": [{"message": {"content": "今天，天气很好。"}}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "2.0",
+                "VOICEIME_LLM_MODE": "punctuation",
             }):
                 c = Corrector()
             self.assertTrue(c._available, "health probe should mark available")
-            out = c.correct("今天气像很好")
-            self.assertEqual(out, "今天气象很好")
+            out = c.correct("今天天气很好")
+            self.assertEqual(out, "今天，天气很好。")
             self.assertEqual(len(srv.requests), 1)
             req = srv.requests[0]
             self.assertEqual(req["model"], "local-qwen")
             self.assertEqual(req["temperature"], 0.0)
             self.assertEqual(len(req["messages"]), 2)
             self.assertEqual(req["messages"][0]["role"], "system")
-            self.assertEqual(req["messages"][1]["content"], "今天气像很好")
+            self.assertEqual(req["messages"][1]["content"], "今天天气很好")
+
+    def test_safe_mode_rejects_chinese_word_substitution(self):
+        with StubServer([
+            {"choices": [{"message": {"content": "今天气象很好"}}]},
+        ]) as srv:
+            with _with_env({
+                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "VOICEIME_LLM_TIMEOUT": "1.0",
+                "VOICEIME_LLM_MODE": "punctuation",
+            }):
+                c = Corrector()
+            # The LLM cannot know from text alone whether 气像 or 气象 was spoken.
+            # Safe mode therefore preserves the ASR lexical content.
+            self.assertEqual(c.correct("今天气像很好"), "今天气像很好")
+
+    def test_safe_mode_rejects_deletion_and_rewrite(self):
+        with StubServer([
+            {"choices": [{"message": {"content": "我们部署项目。"}}]},
+        ]) as srv:
+            with _with_env({
+                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "VOICEIME_LLM_TIMEOUT": "1.0",
+                "VOICEIME_LLM_MODE": "punctuation",
+            }):
+                c = Corrector()
+            self.assertEqual(
+                c.correct("那个我们把这个项目部署一下"),
+                "那个我们把这个项目部署一下",
+            )
+
+    def test_safe_mode_rejects_english_token_changes(self):
+        with StubServer([
+            {"choices": [{"message": {"content": "把 GitLab PR merge 到 main。"}}]},
+        ]) as srv:
+            with _with_env({
+                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "VOICEIME_LLM_TIMEOUT": "1.0",
+                "VOICEIME_LLM_MODE": "punctuation",
+            }):
+                c = Corrector()
+            self.assertEqual(
+                c.correct("把 GitHub PR merge 到 main"),
+                "把 GitHub PR merge 到 main",
+            )
+
+    def test_aggressive_mode_is_explicit_opt_in(self):
+        with StubServer([
+            {"choices": [{"message": {"content": "今天气象很好"}}]},
+        ]) as srv:
+            with _with_env({
+                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "VOICEIME_LLM_TIMEOUT": "1.0",
+                "VOICEIME_LLM_MODE": "aggressive",
+            }):
+                c = Corrector()
+            self.assertEqual(c.correct("今天气像很好"), "今天气象很好")
 
     def test_unreachable_endpoint_is_safe_fallback(self):
         dead_port = _free_port()
