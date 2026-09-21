@@ -23,8 +23,14 @@ download_model() {
 
 download_model "sherpa-onnx-paraformer-zh-2024-03-09"
 download_model "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+download_model "sherpa-onnx-zipformer-zh-en-2023-11-22"
 
 test -f "$ROOT/models/sherpa-onnx-paraformer-zh-2024-03-09/model.int8.onnx"
 test -f "$ROOT/models/sherpa-onnx-paraformer-zh-2024-03-09/tokens.txt"
 test -f "$ROOT/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
 test -f "$ROOT/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt"
+
+test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/encoder-epoch-34-avg-19.onnx"
+test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/decoder-epoch-34-avg-19.onnx"
+test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/joiner-epoch-34-avg-19.onnx"
+test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/tokens.txt"
