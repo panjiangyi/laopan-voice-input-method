@@ -87,6 +87,23 @@ deletes = [args for member, args in events if member == "DeleteSurroundingText"]
 assert commits == ["你好这是测式", "试"], events
 assert len(deletes) == 1, events
 
+# Replay the exact signals an application receives and assert the final
+# input-buffer content, not just the recognizer/bridge return values.
+buffer = "已有文字"
+cursor = len(buffer)
+for member, args in events:
+    if member == "CommitString":
+        text = args[0]
+        buffer = buffer[:cursor] + text + buffer[cursor:]
+        cursor += len(text)
+    elif member == "DeleteSurroundingText":
+        offset, size = args
+        start = cursor + offset
+        assert 0 <= start <= cursor <= len(buffer), (buffer, cursor, args)
+        buffer = buffer[:start] + buffer[start + size:]
+        cursor = start
+assert buffer == "已有文字你好这是测试", (buffer, events)
+
 call(name, path, interface, "FocusOut")
 assert bridge(
     "UpdateSession",
