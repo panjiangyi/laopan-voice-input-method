@@ -34,3 +34,13 @@ test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/encoder-epoch-34-av
 test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/decoder-epoch-34-avg-19.onnx"
 test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/joiner-epoch-34-avg-19.onnx"
 test -f "$ROOT/models/sherpa-onnx-zipformer-zh-en-2023-11-22/tokens.txt"
+
+PUNCT_NAME="sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
+PUNCT_DIR="$ROOT/models/$PUNCT_NAME"
+if [ ! -d "$PUNCT_DIR" ]; then
+  tmp="$(mktemp --suffix=.tar.bz2)"
+  curl -fL --retry 3 --retry-delay 2 -o "$tmp"     "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/$PUNCT_NAME.tar.bz2"
+  tar -xjf "$tmp" -C "$ROOT/models"
+  rm -f "$tmp"
+fi
+test -f "$PUNCT_DIR/model.int8.onnx"
