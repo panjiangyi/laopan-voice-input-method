@@ -21,7 +21,7 @@ bash scripts/09-setup-sherpa.sh
 # 3. 推荐：安装松键后的高精度二次纠错模型
 bash scripts/11-setup-quality.sh
 
-# 4. 推荐：松键后走 OpenCode Zen 文本纠错（免费档，识别 vibe coding 这种 2025 词）
+# 4. 实验性：LLM 后处理（默认关闭；安全模式只允许标点/空格）
 #    先去 https://opencode.ai/ 登录并创建一个 Zen API key（Contributor free tier 即可），
 #    然后：
 export OPENCODE_API_KEY=sk-...
@@ -47,7 +47,7 @@ journalctl --user -u voiceime-corrector -f
 ### 使用
 
 - **按住右 Alt**：开始说话，实时上屏。
-- **松开右 Alt**：结束本句；如果安装了 FireRedASR2，会自动做第二遍高精度识别并修正已经上屏的文字；如果 OpenCode Zen corrector 在跑，会再过一遍 LLM 文本纠错（同音字、英文单词拼写、标点、识别 vibe coding 这种 2025 后出现的新词）。
+- **松开右 Alt**：结束本句；如果安装了 FireRedASR2，会自动做第二遍识别。LLM 后处理默认关闭。若显式开启，默认 `punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文。
 - `Ctrl+Alt+V`：免手持开始/停止。
 - `Ctrl+Alt+B`：结束当前听写。
 - `./voiceime-reset`：异常时强制清理引擎和录音进程。
