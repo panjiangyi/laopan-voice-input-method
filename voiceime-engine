@@ -170,26 +170,15 @@ class LLMCorrector:
     """
 
     SYSTEM_PROMPT = (
-        "你是中文语音识别（ASR）后处理助手。用户是程序员。"
-        "ASR 输出文本里出现的所有英文单词、字母串（含单个英文词如 team/mark/PR、"
-        "代码标识符 camelCase/snake_case/kebab-case、缩略词 PR/API/HTTP/URL/JSON/CLI/SDK/CI/CD/AWS/GPU/CPU/IO、"
-        "技术动词 commit/merge/rebase/refactor/deploy/build/review/issue/branch/tag/push/pull/fork/clone、"
-        "专有名词 GitHub/Linux/Ubuntu/Docker/Kubernetes 等）必须**逐字原样保留**，"
-        "绝不翻译成中文、绝不删除、绝不替换成中文同义词、绝不在外面加引号或括号。"
-        "哪怕只是一个孤立的英文单词，规则相同。\n"
-        "其他处理：\n"
-        "1. 修正中文同音字、漏字、多字；\n"
-        "2. 补全中文标点（句号、逗号、问号、感叹号、引号、顿号等），按自然停顿断句；\n"
-        "3. 删除口头禅/重复（嗯、啊、那个、就是说、然后然后等），把松散口语整理成书面语；\n"
-        "4. 保留原意与语种，不要总结、不要改写事实、不要加注释。\n"
-        "【示例】\n"
-        "输入：帮我把团队踢了那个PR 然后merge到main branch\n"
-        "输出：帮我把团队踢了那个PR，然后merge到main branch。\n"
-        "输入：team review mark一下这个issue\n"
-        "输出：team review mark一下这个issue。\n"
-        "输入：这个 API 的 endpoint 要 refactor 一下，还要写 unit test\n"
-        "输出：这个API的endpoint要refactor一下，还要写unit test。\n"
-        "只输出修正后的最终文本，不要任何解释、不要加引号。"
+        "你是语音输入的保守型后处理器。你的首要原则是：绝不能把已经正确的识别文本改错。\n"
+        "默认只允许做两类事情：1）添加或调整标点；2）调整中文与英文之间的空格。\n"
+        "禁止修改、删除、增加任何中文汉字、数字、英文字母或代码标识符。"
+        "禁止删除口头禅，禁止把口语改写成书面语，禁止同义改写，禁止猜测同音字。"
+        "如果原文已经自然，原样返回。\n"
+        "示例：\n"
+        "输入：这个 API endpoint 要 review 一下然后 merge 到 main\n"
+        "输出：这个 API endpoint 要 review 一下，然后 merge 到 main。\n"
+        "只输出最终文本，不要解释，不要加引号。"
     )
 
     def __init__(self) -> None:
@@ -198,6 +187,7 @@ class LLMCorrector:
         ).rstrip("/")
         self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", "25.0"))
         self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "1") == "1"
+        self.mode = os.environ.get("VOICEIME_LLM_MODE", "punctuation").lower()
         self._available = False
         if not self.enabled:
             log("LLM corrector disabled by VOICEIME_LLM_ENABLED=0")
@@ -213,6 +203,26 @@ class LLMCorrector:
                     log(f"LLM corrector /health returned {resp.status}")
         except (urllib.error.URLError, OSError, TimeoutError) as ex:
             log(f"LLM corrector unreachable at {self.endpoint}: {ex!r}")
+
+    @staticmethod
+    def _lexical_content(text: str) -> str:
+        """Strip punctuation/whitespace while preserving semantic characters.
+
+        In safe mode, an LLM result is accepted only when this sequence is
+        byte-for-byte identical to the ASR result. That allows punctuation
+        and spacing improvements but blocks hallucinated word substitutions,
+        deletions, additions, English rewrites, and homophone guesses.
+        """
+        return "".join(ch for ch in text if ch.isalnum())
+
+    def _accept_candidate(self, original: str, candidate: str) -> bool:
+        if candidate == original:
+            return True
+        if self.mode in ("off", "disabled"):
+            return False
+        if self.mode in ("rewrite", "aggressive"):
+            return True
+        return self._lexical_content(original) == self._lexical_content(candidate)
 
     def correct(self, text: str) -> str:
         if not self._available or not text or not text.strip():
@@ -244,6 +254,12 @@ class LLMCorrector:
             log(f"LLM correction: malformed response: {ex!r}")
             return text
         if not content:
+            return text
+        if not self._accept_candidate(text, content):
+            log(
+                "LLM correction rejected by lexical guard "
+                f"mode={self.mode} chars={len(text)}->{len(content)}"
+            )
             return text
         return content
 
