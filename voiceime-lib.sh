@@ -4,6 +4,8 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 UNIT="voiceime-ptt.service"
 LOCK="${XDG_RUNTIME_DIR:-/tmp}/voiceime.lock"
 COOKIE="${XDG_RUNTIME_DIR:-/tmp}/voiceime-$(id -u).cookie"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/voiceime-engine.state"
+READY="${XDG_RUNTIME_DIR:-/tmp}/voiceime-engine.ready"
 
 export DISPLAY="${DISPLAY:-:1}"
 export LD_LIBRARY_PATH="$ROOT/bin:${LD_LIBRARY_PATH:-}"
@@ -35,30 +37,38 @@ voiceime_pid() {
 voiceime_state() {
   local pid state
   pid="$(voiceime_pid)" || { echo none; return; }
+
+  if [ -r "$STATE" ]; then
+    state="$(tr -d '\r\n' < "$STATE" 2>/dev/null || true)"
+    case "$state" in
+      suspended|recording) echo "$state"; return ;;
+    esac
+  fi
+
   state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" || { echo none; return; }
-  [ "$state" = T ] && echo suspended || echo recording
+  [ "$state" = T ] && echo suspended || echo starting
 }
 
 voiceime_resume() {
   local pid; pid="$(voiceime_pid)" || return 1
-  [ "$(voiceime_state)" = suspended ] && kill -CONT "$pid" 2>/dev/null
+  kill -USR2 "$pid" 2>/dev/null || kill -CONT "$pid" 2>/dev/null || return 1
 }
 
 voiceime_suspend() {
   local pid; pid="$(voiceime_pid)" || return 1
-  [ "$(voiceime_state)" = recording ] && kill -USR1 "$pid" 2>/dev/null
-  for _ in $(seq 1 100); do
+  kill -USR1 "$pid" 2>/dev/null || return 1
+  for _ in $(seq 1 40); do
     [ "$(voiceime_state)" != recording ] && return 0
     sleep 0.05
   done
-  return 1
+  return 0
 }
 
 voiceime_ensure_daemon() {
   case "$(voiceime_state)" in suspended|recording) return 0 ;; esac
   systemctl --user start "$UNIT" >/dev/null 2>&1 ||     setsid "$ROOT/voiceime-ptt" >/dev/null 2>&1 < /dev/null &
   for _ in $(seq 1 300); do
-    [ "$(voiceime_state)" = suspended ] && return 0
+    case "$(voiceime_state)" in suspended|recording) return 0 ;; esac
     sleep 0.1
   done
   return 1
@@ -75,5 +85,5 @@ voiceime_kill_all() {
   pids="$(voiceime_pids)"
   [ -n "$pids" ] && kill -KILL $pids 2>/dev/null || true
   pkill -u "$(id -u)" -x parec 2>/dev/null || true
-  rm -f "$COOKIE"
+  rm -f "$COOKIE" "$STATE" "$READY"
 }
