@@ -18,7 +18,7 @@ jobs:
             dbus-x11
       - name: Python syntax
         run: |
-          python3 -m py_compile             voiceime-engine voiceime-ptt             scripts/08-offline-suite.py scripts/15-evaluate-samples.py scripts/16-tune-streaming.py scripts/18-compare-final-models.py             tests/test_voiceime.py tests/test_engine_logic.py             tests/test_llm_corrector.py tests/test_benchmark.py             tests/native_bridge.py
+          python3 -m py_compile             voiceime-engine voiceime-ptt             scripts/08-offline-suite.py scripts/15-evaluate-samples.py scripts/16-tune-streaming.py scripts/18-compare-final-models.py scripts/19-evaluate-punctuation.py             tests/test_voiceime.py tests/test_engine_logic.py             tests/test_llm_corrector.py tests/test_benchmark.py             tests/native_bridge.py
       - name: Shell syntax
         run: |
           bash -n voiceime-lib.sh voiceime-begin voiceime-end voiceime-mic voiceime-reset voiceime-status
