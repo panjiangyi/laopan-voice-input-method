@@ -66,12 +66,67 @@ def edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
+def _prev_nonspace(chars: list[str], i: int) -> str:
+    j = i - 1
+    while j >= 0 and chars[j].isspace():
+        j -= 1
+    return chars[j] if j >= 0 else ""
+
+
+def _next_nonspace(chars: list[str], i: int) -> str:
+    j = i + 1
+    while j < len(chars) and chars[j].isspace():
+        j += 1
+    return chars[j] if j < len(chars) else ""
+
+
+def _is_ascii_word_char(ch: str) -> bool:
+    return bool(ch) and ch.isascii() and ch.isalnum()
+
+
 def normalize_content(text: str) -> str:
-    return "".join(
-        ch.lower()
-        for ch in text
-        if not ch.isspace() and ch not in COSMETIC_PUNCT
-    )
+    """Normalize presentation only; preserve numeric/code semantics.
+
+    Examples that must stay different:
+      1.5 != 15
+      -10 != 10
+      C++ != C
+      user_id != userid
+
+    Natural sentence punctuation and CJK<->ASCII boundary spaces are cosmetic.
+    """
+    chars = list(text.lower())
+    out: list[str] = []
+    always_cosmetic = set("，。！？；：“”‘’（）《》〈〉")
+    conditional_ascii = set(",.!?;:()[]{}")
+
+    for i, ch in enumerate(chars):
+        prev_ch = _prev_nonspace(chars, i)
+        next_ch = _next_nonspace(chars, i)
+
+        if ch.isspace():
+            if (
+                (is_cjk(prev_ch) and _is_ascii_word_char(next_ch))
+                or (_is_ascii_word_char(prev_ch) and is_cjk(next_ch))
+            ):
+                continue
+            out.append(" ")
+            continue
+
+        if ch in always_cosmetic:
+            continue
+
+        if ch in conditional_ascii:
+            # ASCII punctuation embedded inside a number/code token is
+            # semantic. A sentence delimiter is presentation.
+            if _is_ascii_word_char(prev_ch) and _is_ascii_word_char(next_ch):
+                out.append(ch)
+            continue
+
+        # Preserve + - _ / and any other program/number punctuation.
+        out.append(ch)
+
+    return "".join(out)
 
 
 def content_error(reference: str, hypothesis: str) -> tuple[int, int]:
