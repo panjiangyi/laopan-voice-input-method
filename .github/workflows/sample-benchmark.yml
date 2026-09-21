@@ -25,13 +25,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models
-          key: voiceime-asr-models-v1
+          key: voiceime-asr-models-v2
+          restore-keys: |
+            voiceime-asr-models-v1
 
       - name: Install streaming ASR and model
         run: bash scripts/09-setup-sherpa.sh
 
       - name: Install FireRedASR2 final model
         run: bash scripts/11-setup-quality.sh
+
+      - name: Install benchmark candidate models
+        run: bash scripts/17-setup-candidate-models.sh
 
       - name: Run 30-sample benchmark
         env:
@@ -42,8 +47,10 @@ jobs:
           echo "Benchmarking $manifest"
           python3 scripts/15-evaluate-samples.py "$manifest" --output-dir benchmark-results
           python3 scripts/16-tune-streaming.py "$manifest" --output benchmark-results/streaming-tail-sweep.tsv
+          python3 scripts/18-compare-final-models.py "$manifest" --output-dir benchmark-results
           cat benchmark-results/report.md
           cat benchmark-results/streaming-tail-sweep.tsv
+          cat benchmark-results/final-model-summary.tsv
 
       - name: Upload benchmark report
         uses: actions/upload-artifact@v4
