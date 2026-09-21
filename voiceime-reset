@@ -6,6 +6,7 @@ set -u
 source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
 
 if [ "${1:-}" != "--keep-service" ]; then
+  systemctl --user stop voiceime-overlay.service >/dev/null 2>&1 || true
   systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
   pkill -u "$(id -u)" -f -- "^[^ ]*python[0-9.]* $ROOT/voiceime-ptt" 2>/dev/null || true
 fi

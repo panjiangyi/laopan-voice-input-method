@@ -19,5 +19,8 @@ __pycache__/
 
 # Runtime / local state
 /tmp/
+.env
+.env.*
+!.env.example
 *.cookie
 *.log

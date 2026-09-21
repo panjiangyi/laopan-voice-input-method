@@ -1,12 +1,28 @@
 # VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
-> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次纠错 +
-> OpenCode Zen（Muse Spark 1.3 免费档，xhigh 推理）文本纠错 + Fcitx5 原生提交。
+> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次识别（默认关闭）+
+> DeepSeek API 文本纠错（可选）+ Fcitx5 原生提交。
 > 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
 
 ## 推荐安装（日用路径）
 
 适用：Ubuntu 24.04 + GNOME + Fcitx5。当前 PTT 热键监听仍以 X11 为主。
+
+已经完成首次依赖和模型安装时，日常更新直接运行：
+
+```bash
+./deploy.sh
+```
+
+脚本会询问是否启用一句话结束后的 AI 纠错。启用时可继续选择：
+
+- `punctuation`：只调整标点和中英文空格，默认推荐。
+- `aggressive`：允许修正错字和英文词，可能改变原意。
+- DeepSeek 模型以及引擎等待纠错结果的超时时间。
+
+CI 或其他非交互环境可以用 `VOICEIME_LLM_ENABLED`、
+`VOICEIME_LLM_MODE`、`VOICEIME_LLM_TIMEOUT`、
+`DEEPSEEK_MODEL` 提供相同配置。密钥只从项目根目录的 `.env` 读取。
 
 ```bash
 # 1. 先构建并安装 Fcitx5 原生桥
@@ -18,15 +34,14 @@ fcitx5 -r
 # 2. 安装中英双语实时识别后端
 bash scripts/09-setup-sherpa.sh
 
-# 3. 推荐：安装松键后的高精度二次纠错模型
+# 3. 可选：安装松键后的二次识别模型（默认关闭，先用真人录音 A/B）
 bash scripts/11-setup-quality.sh
 
-# 4. 实验性：LLM 后处理（默认关闭；安全模式只允许标点/空格）
-#    先去 https://opencode.ai/ 登录并创建一个 Zen API key（Contributor free tier 即可），
-#    然后：
-export OPENCODE_API_KEY=sk-...
-bash scripts/12-setup-corrector.sh
-bash scripts/13-install-corrector-service.sh
+# 4. 可选：DeepSeek 后处理（默认关闭；安全模式只允许标点/空格）
+#    在项目根目录创建权限为 600 的 .env：
+#    DEEPSEEK_API_KEY='...'
+#    DEEPSEEK_BASE_URL='https://api.deepseek.com/anthropic'
+#    DEEPSEEK_MODEL='deepseek-v4-flash'
 
 # 5. 安装并启动用户级 systemd 服务
 bash scripts/10-install-service.sh
@@ -36,10 +51,8 @@ bash scripts/10-install-service.sh
 journalctl --user -u voiceime-ptt -f
 journalctl --user -u voiceime-corrector -f
 
-> voiceime-corrector 是 ~20MB Python stdlib 进程，转发请求到 OpenCode Zen。
-> 不占 GPU，不下载模型。默认端口 `19888`。被占用时设
-> `VOICEIME_CORRECTOR_PORT=<port>` 重跑 `13-install-corrector-service.sh`，
-> 同步把 `10-install-service.sh` 里的 `VOICEIME_LLM_ENDPOINT` 改成同一端口。
+> `voiceime-engine` 直接调用 DeepSeek 的 Anthropic 兼容接口，明确关闭
+> thinking；不需要 OpenCode、cc-switch 或本地纠错服务。
 > 换模型 / 换推理档：覆盖 `VOICEIME_CORRECTOR_ZEN_MODEL` /
 > `VOICEIME_CORRECTOR_ZEN_REASONING`（low/medium/high/xhigh）。
 ```
@@ -47,7 +60,8 @@ journalctl --user -u voiceime-corrector -f
 ### 使用
 
 - **按住右 Alt**：开始说话，实时上屏。
-- **松开右 Alt**：结束本句；如果安装了 FireRedASR2，会自动做第二遍识别。LLM 后处理默认关闭。若显式开启，默认 `punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文。
+- **松开右 Alt**：结束本句。FireRedASR2 和 LLM 后处理默认关闭；本机真人样本中 FireRed 的中英混合结果更差，只应用 `VOICEIME_FINAL_ENABLED=1` 显式开启做 A/B。若开启 LLM，默认 `punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文。
+- 屏幕提示：录音时在当前活动显示器下方居中显示动态声波；AI 后处理显示“纠错中”，结束后短暂显示“纠错完成”“纠错失败”或“纠错超时”。提示窗不会获取键盘焦点。
 - `Ctrl+Alt+V`：免手持开始/停止。
 - `Ctrl+Alt+B`：结束当前听写。
 - `./voiceime-reset`：异常时强制清理引擎和录音进程。
@@ -65,6 +79,20 @@ journalctl --user -u voiceime-corrector -f
 ### 体验目标
 
 当前目标是把日常中文与中英混合口述做到“可以替代大部分键盘输入”的 Alpha。是否达到“豆包输入法 80%”必须用同一批真人录音做 A/B 基准，不能只靠主观描述。后续以首字延迟、最终纠错延迟、中文 CER、中英 code-switch WER、连续 100 次 PTT 无卡死率作为验收指标。
+
+### 用真人录音评测
+
+`14-record-samples.sh` 产生的 manifest 可以直接交给当前识别链路。评测会同时报告内容、原始格式、英文词、数字和标点准确率，并把逐句结果写成 TSV：
+
+```bash
+python3 scripts/08-offline-suite.py \
+  --manifest samples/voice-input-session-20260921-211507/manifest.tsv
+```
+
+默认使用日常路径（Sherpa streaming）。测试 FireRed 时临时加
+`VOICEIME_FINAL_ENABLED=1`；不要仅因模型已经下载就默认启用。当前这批
+30 条真人录音的 streaming 内容准确率为 90.66%，FireRed 为 82.71%。
+这批数据参与了调优，只能作为开发集；最终准确率需要另录未参与调优的样本验收。
 
 ---
 

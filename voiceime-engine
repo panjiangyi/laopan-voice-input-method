@@ -17,6 +17,7 @@ import json
 import os
 import secrets
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -38,15 +39,42 @@ SAMPLE_RATE = 16000
 CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
 MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
+FINAL_PADDING_SEC = float(os.environ.get("VOICEIME_FINAL_PADDING_SEC", "1.0"))
 MIC_SCRIPT = ROOT / "voiceime-mic"
 LOCK = RUNTIME / "voiceime-engine.lock"
 STATE_FILE = RUNTIME / "voiceime-engine.state"
 READY_FILE = RUNTIME / "voiceime-engine.ready"
+CORRECTION_FILE = RUNTIME / "voiceime-correction.state"
 
 terminate = False
-finish_utterance = False
-start_utterance = False
+# Monotonic request numbers preserve a release that arrives while the previous
+# utterance is still finalizing. Plain booleans lost that event when the next
+# run reset finish_utterance to False.
+start_request = 0
+stop_request = 0
 current_session = ""
+
+
+def load_project_env() -> None:
+    """Load simple KEY=VALUE entries without adding a dotenv dependency."""
+    path = ROOT / ".env"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        raw = raw.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        try:
+            parsed = shlex.split(value, comments=True)
+        except ValueError:
+            continue
+        os.environ[key] = parsed[0] if parsed else ""
 
 
 def log(msg: str) -> None:
@@ -57,6 +85,16 @@ def log(msg: str) -> None:
 def set_state(state: str) -> None:
     try:
         STATE_FILE.write_text(state + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def set_correction_state(session: str, status: str) -> None:
+    try:
+        CORRECTION_FILE.write_text(
+            json.dumps({"session": session, "status": status, "time": time.time()}),
+            encoding="utf-8",
+        )
     except OSError:
         pass
 
@@ -160,6 +198,11 @@ class FinalRecognizer:
 
     def __init__(self) -> None:
         self.recognizer = None
+        if os.environ.get("VOICEIME_FINAL_ENABLED", "0").lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            log("final ASR disabled; set VOICEIME_FINAL_ENABLED=1 to test it")
+            return
         model_dir = Path(os.environ.get(
             "VOICEIME_FINAL_MODEL",
             ROOT / "models" / "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",
@@ -195,7 +238,7 @@ class FinalRecognizer:
 
 
 class LLMCorrector:
-    """Optional conservative text cleanup."""
+    """Optional conservative cleanup through the DeepSeek Anthropic API."""
 
     SYSTEM_PROMPT = (
         "你是语音输入的保守型后处理器。首要原则：绝不能把正确文本改错。\n"
@@ -205,25 +248,33 @@ class LLMCorrector:
         "禁止删除口头禅、同义改写、猜测同音字。原文自然时原样返回。\n"
         "只输出最终文本，不要解释，不要加引号。"
     )
+    REWRITE_PROMPT = (
+        "你是语音输入纠错器。修正明显的识别错误、英文拼写、技术词大小写、"
+        "标点和中英文空格，同时严格保留原意、数字、代码符号和变量名。"
+        "不要扩写、总结或回答原文。只输出纠错后的最终文本，不要解释，不要加引号。"
+    )
 
     def __init__(self) -> None:
-        self.endpoint = os.environ.get(
-            "VOICEIME_LLM_ENDPOINT", "http://127.0.0.1:19888"
+        load_project_env()
+        self.base_url = os.environ.get(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com/anthropic"
         ).rstrip("/")
-        self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", "2.0"))
+        self.api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+        self.timeout = float(os.environ.get("VOICEIME_LLM_TIMEOUT", os.environ.get("DEEPSEEK_TIMEOUT", "10")))
         self.enabled = os.environ.get("VOICEIME_LLM_ENABLED", "0") == "1"
         self.mode = os.environ.get("VOICEIME_LLM_MODE", "punctuation").lower()
-        self._available = False
+        self.last_status = "disabled"
+        self._available = bool(self.api_key and self.base_url)
         if not self.enabled:
             log("LLM corrector disabled")
             return
-        try:
-            with urllib.request.urlopen(
-                f"{self.endpoint}/health", timeout=1.0
-            ) as resp:
-                self._available = resp.status == 200
-        except (urllib.error.URLError, OSError, TimeoutError) as ex:
-            log(f"LLM corrector unreachable: {ex!r}")
+        if not self._available:
+            self.last_status = "unavailable"
+            log("DeepSeek corrector unavailable: check project .env")
+            return
+        self.last_status = "ready"
+        log(f"DeepSeek corrector ready model={self.model}")
 
     @staticmethod
     def _is_cjk(ch: str) -> bool:
@@ -303,38 +354,66 @@ class LLMCorrector:
         return self._semantic_signature(original) == self._semantic_signature(candidate)
 
     def correct(self, text: str) -> str:
-        if not self._available or not text or not text.strip():
+        if not text or not text.strip():
+            self.last_status = "unchanged"
             return text
+        if not self._available:
+            self.last_status = "failed"
+            return text
+        prompt = (
+            self.REWRITE_PROMPT
+            if self.mode in ("rewrite", "aggressive")
+            else self.SYSTEM_PROMPT
+        )
         body = json.dumps({
-            "model": "local-qwen",
-            "messages": [
-                {"role": "system", "content": self.SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": f"{prompt}\n\n原文：{text}",
+            }],
             "max_tokens": 256,
             "temperature": 0.0,
-            "stream": False,
+            "thinking": {"type": "disabled"},
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{self.endpoint}/v1/chat/completions",
+            f"{self.base_url}/v1/messages",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read())
-            content = payload["choices"][0]["message"]["content"].strip()
-        except (
-            urllib.error.URLError, OSError, TimeoutError, ValueError,
-            KeyError, IndexError, TypeError,
-        ) as ex:
+            content = "".join(
+                item.get("text", "")
+                for item in payload["content"]
+                if item.get("type") == "text"
+            ).strip()
+        except (TimeoutError,) as ex:
+            self.last_status = "timeout"
+            log(f"LLM correction timed out: {ex!r}")
+            return text
+        except urllib.error.URLError as ex:
+            self.last_status = (
+                "timeout" if isinstance(ex.reason, TimeoutError) else "failed"
+            )
+            log(f"LLM correction failed: {ex!r}")
+            return text
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as ex:
+            self.last_status = "failed"
             log(f"LLM correction failed: {ex!r}")
             return text
         if not content:
+            self.last_status = "failed"
             return text
         if not self._accept_candidate(text, content):
+            self.last_status = "rejected"
             log("LLM candidate rejected by semantic guard")
             return text
+        self.last_status = "success"
         return content
 
 
@@ -389,8 +468,13 @@ class SherpaRecognizer:
         return value.text if hasattr(value, "text") else str(value)
 
     def finalize(self, stream) -> str:
+        # Paraformer needs trailing silence to emit its final tokens.  The old
+        # 200 ms padding truncated sentence endings in the user's real speech
+        # samples.  This is synthetic audio, so increasing it adds inference
+        # work but does not add one second of wall-clock waiting.
         stream.accept_waveform(
-            SAMPLE_RATE, np.zeros(int(0.20 * SAMPLE_RATE), dtype=np.float32)
+            SAMPLE_RATE,
+            np.zeros(int(max(0.0, FINAL_PADDING_SEC) * SAMPLE_RATE), dtype=np.float32),
         )
         try:
             stream.input_finished()
@@ -451,20 +535,19 @@ def stop_recorder(proc: subprocess.Popen) -> bytes:
 
 
 def on_finish(_sig, _frame) -> None:
-    global finish_utterance
-    finish_utterance = True
+    global stop_request
+    stop_request = start_request
 
 
 def on_start(_sig, _frame) -> None:
-    global start_utterance
-    start_utterance = True
+    global start_request
+    start_request += 1
 
 
 def on_term(_sig, _frame) -> None:
-    global terminate, finish_utterance, start_utterance
+    global terminate, stop_request
     terminate = True
-    finish_utterance = True
-    start_utterance = True
+    stop_request = start_request
 
 
 def single_instance():
@@ -500,10 +583,26 @@ def refine_async(
     if session != current_session:
         return
 
-    try:
-        final = llm.correct(final)
-    except Exception as ex:
-        log(f"LLM refinement failed; keeping ASR result: {ex!r}")
+    llm_enabled = getattr(llm, "enabled", True)
+    if llm_enabled:
+        set_correction_state(session, "correcting")
+        try:
+            final = llm.correct(final)
+        except Exception as ex:
+            llm.last_status = "failed"
+            log(f"LLM refinement failed; keeping ASR result: {ex!r}")
+
+        if session != current_session:
+            return
+        outcome = getattr(
+            llm, "last_status", "success" if final != base_text else "failed"
+        )
+        if outcome == "timeout":
+            set_correction_state(session, "timeout")
+        elif outcome != "success":
+            set_correction_state(session, "failed")
+        elif final == base_text:
+            set_correction_state(session, "success")
 
     if session != current_session or final == base_text:
         return
@@ -513,10 +612,16 @@ def refine_async(
         bridge = FcitxBridge()
         if not bridge.update(session, remove, append):
             log("late refinement rejected: session/range changed")
+            if llm_enabled:
+                set_correction_state(session, "failed")
         else:
             log(f"late refinement applied chars={len(base_text)}->{len(final)}")
+            if llm_enabled:
+                set_correction_state(session, "success")
     except Exception as ex:
         log(f"late refinement delivery failed: {ex!r}")
+        if llm_enabled:
+            set_correction_state(session, "failed")
 
 
 def run_utterance(
@@ -525,11 +630,12 @@ def run_utterance(
     llm: LLMCorrector,
     bridge: FcitxBridge,
     executor: ThreadPoolExecutor,
+    request_id: int,
 ) -> None:
-    global finish_utterance, current_session
-    finish_utterance = False
+    global current_session
     session = secrets.token_hex(12)
     current_session = session
+    set_correction_state(session, "idle")
 
     if not bridge.begin(session):
         log("no focused Fcitx input context or native bridge is outdated")
@@ -549,7 +655,7 @@ def run_utterance(
     set_state("recording")
     log(f"recording session={session[:8]}")
     try:
-        while not finish_utterance and not terminate:
+        while stop_request < request_id and not terminate:
             if time.monotonic() - started > MAX_UTTERANCE_SEC:
                 log("utterance safety timeout")
                 break
@@ -608,7 +714,6 @@ def run_utterance(
 
 
 def main() -> int:
-    global start_utterance
     _lock = single_instance()
     signal.signal(signal.SIGUSR1, on_finish)
     signal.signal(signal.SIGUSR2, on_start)
@@ -618,6 +723,7 @@ def main() -> int:
     try:
         READY_FILE.unlink(missing_ok=True)
         STATE_FILE.unlink(missing_ok=True)
+        CORRECTION_FILE.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -632,14 +738,17 @@ def main() -> int:
     log("ready")
 
     try:
+        handled_request = 0
         while not terminate:
-            while not start_utterance and not terminate:
+            while handled_request >= start_request and not terminate:
                 signal.pause()
             if terminate:
                 break
-            start_utterance = False
+            handled_request += 1
             try:
-                run_utterance(asr, final_asr, llm, bridge, executor)
+                run_utterance(
+                    asr, final_asr, llm, bridge, executor, handled_request
+                )
             except Exception as ex:
                 set_state("suspended")
                 log(f"utterance failed: {ex!r}")
@@ -647,6 +756,7 @@ def main() -> int:
         try:
             READY_FILE.unlink(missing_ok=True)
             STATE_FILE.unlink(missing_ok=True)
+            CORRECTION_FILE.unlink(missing_ok=True)
         except OSError:
             pass
         executor.shutdown(wait=False, cancel_futures=True)

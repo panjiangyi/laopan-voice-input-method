@@ -10,6 +10,7 @@ import runpy
 import socket
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def _free_port() -> int:
 class StubServer:
     """Tiny test double for the corrector HTTP endpoint.
 
-    Replays `responses` in order on each /v1/chat/completions hit. Records
+    Replays `responses` in order on each DeepSeek /v1/messages hit. Records
     every received body in `requests` for assertion.
     """
     def __init__(self, responses):
@@ -54,7 +55,7 @@ class StubServer:
                 self.send_response(404); self.end_headers()
 
             def do_POST(self):
-                if self.path != "/v1/chat/completions":
+                if self.path != "/v1/messages":
                     self.send_response(404); self.end_headers(); return
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length)
@@ -86,6 +87,8 @@ def _with_env(values: dict):
     """Context manager that pushes env vars for the duration of a block."""
     class _Ctx:
         def __enter__(self_inner):
+            values.setdefault("DEEPSEEK_API_KEY", "test-key")
+            values.setdefault("DEEPSEEK_MODEL", "test-model")
             self_inner._saved = {}
             for k, v in values.items():
                 self_inner._saved[k] = os.environ.get(k)
@@ -103,33 +106,33 @@ def _with_env(values: dict):
 class LLMCorrectorTests(unittest.TestCase):
     def test_probe_then_correct_sends_expected_payload(self):
         with StubServer([
-            {"choices": [{"message": {"content": "今天，天气很好。"}}]},
+            {"content": [{"type": "text", "text": "今天，天气很好。"}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "2.0",
                 "VOICEIME_LLM_MODE": "punctuation",
             }):
                 c = Corrector()
-            self.assertTrue(c._available, "health probe should mark available")
+            self.assertTrue(c._available)
             out = c.correct("今天天气很好")
             self.assertEqual(out, "今天，天气很好。")
             self.assertEqual(len(srv.requests), 1)
             req = srv.requests[0]
-            self.assertEqual(req["model"], "local-qwen")
+            self.assertEqual(req["model"], "test-model")
             self.assertEqual(req["temperature"], 0.0)
-            self.assertEqual(len(req["messages"]), 2)
-            self.assertEqual(req["messages"][0]["role"], "system")
-            self.assertEqual(req["messages"][1]["content"], "今天天气很好")
+            self.assertEqual(req["thinking"], {"type": "disabled"})
+            self.assertEqual(len(req["messages"]), 1)
+            self.assertIn("今天天气很好", req["messages"][0]["content"])
 
     def test_safe_mode_rejects_chinese_word_substitution(self):
         with StubServer([
-            {"choices": [{"message": {"content": "今天气象很好"}}]},
+            {"content": [{"type": "text", "text": "今天气象很好"}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "punctuation",
             }):
@@ -137,14 +140,28 @@ class LLMCorrectorTests(unittest.TestCase):
             # The LLM cannot know from text alone whether 气像 or 气象 was spoken.
             # Safe mode therefore preserves the ASR lexical content.
             self.assertEqual(c.correct("今天气像很好"), "今天气像很好")
+            self.assertEqual(c.last_status, "rejected")
+
+    def test_timeout_has_distinct_status(self):
+        c = Corrector.__new__(Corrector)
+        c._available = True
+        c.base_url = "http://127.0.0.1:1"
+        c.api_key = "test-key"
+        c.model = "test-model"
+        c.timeout = 0.1
+        c.mode = "punctuation"
+        c.last_status = "ready"
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("slow")):
+            self.assertEqual(c.correct("测试"), "测试")
+        self.assertEqual(c.last_status, "timeout")
 
     def test_safe_mode_rejects_deletion_and_rewrite(self):
         with StubServer([
-            {"choices": [{"message": {"content": "我们部署项目。"}}]},
+            {"content": [{"type": "text", "text": "我们部署项目。"}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "punctuation",
             }):
@@ -156,11 +173,11 @@ class LLMCorrectorTests(unittest.TestCase):
 
     def test_safe_mode_rejects_english_token_changes(self):
         with StubServer([
-            {"choices": [{"message": {"content": "把 GitLab PR merge 到 main。"}}]},
+            {"content": [{"type": "text", "text": "把 GitLab PR merge 到 main。"}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "punctuation",
             }):
@@ -194,11 +211,11 @@ class LLMCorrectorTests(unittest.TestCase):
 
     def test_aggressive_mode_is_explicit_opt_in(self):
         with StubServer([
-            {"choices": [{"message": {"content": "今天气象很好"}}]},
+            {"content": [{"type": "text", "text": "今天气象很好"}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
                 "VOICEIME_LLM_MODE": "aggressive",
             }):
@@ -209,30 +226,31 @@ class LLMCorrectorTests(unittest.TestCase):
         dead_port = _free_port()
         with _with_env({
             "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{dead_port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{dead_port}",
             "VOICEIME_LLM_TIMEOUT": "0.2",
         }):
             dead = Corrector()
-        self.assertFalse(dead._available)
+        self.assertTrue(dead._available)
         # correct() must NOT raise and must return the input unchanged.
         self.assertEqual(dead.correct("原文不动"), "原文不动")
 
     def test_disabled_flag_short_circuits(self):
         with _with_env({"VOICEIME_LLM_ENABLED": "0"}):
             with StubServer([]) as srv:
-                os.environ["VOICEIME_LLM_ENDPOINT"] = f"http://127.0.0.1:{srv.port}"
+                os.environ["DEEPSEEK_BASE_URL"] = f"http://127.0.0.1:{srv.port}"
+                os.environ["DEEPSEEK_API_KEY"] = "test-key"
                 os.environ["VOICEIME_LLM_TIMEOUT"] = "1.0"
                 c = Corrector()
-                self.assertFalse(c._available)
+                self.assertTrue(c._available)
                 self.assertEqual(c.correct("原文不动"), "原文不动")
 
     def test_empty_corrected_text_returns_original(self):
         with StubServer([
-            {"choices": [{"message": {"content": "   "}}]},
+            {"content": [{"type": "text", "text": "   "}]},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
             }):
                 c = Corrector()
@@ -241,11 +259,11 @@ class LLMCorrectorTests(unittest.TestCase):
 
     def test_malformed_response_returns_original(self):
         with StubServer([
-            {"no_choices_here": True},
+            {"no_content_here": True},
         ]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
             }):
                 c = Corrector()
@@ -256,7 +274,7 @@ class LLMCorrectorTests(unittest.TestCase):
         with StubServer([]) as srv:
             with _with_env({
                 "VOICEIME_LLM_ENABLED": "1",
-                "VOICEIME_LLM_ENDPOINT": f"http://127.0.0.1:{srv.port}",
+                "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
                 "VOICEIME_LLM_TIMEOUT": "1.0",
             }):
                 c = Corrector()

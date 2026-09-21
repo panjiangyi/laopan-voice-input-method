@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import runpy
 import sys
 import wave
@@ -76,6 +77,34 @@ def cer(reference: str, hypothesis: str) -> tuple[int, float]:
     return dist, dist / max(len(ref), 1)
 
 
+def raw_cer(reference: str, hypothesis: str) -> tuple[int, float]:
+    ref = reference.lower()
+    hyp = hypothesis.lower()
+    dist = edit_distance(ref, hyp)
+    return dist, dist / max(len(ref), 1)
+
+
+def token_distance(pattern: str, reference: str, hypothesis: str) -> tuple[int, int]:
+    """Return edit distance and reference count for one token category."""
+    ref = re.findall(pattern, reference.lower())
+    hyp = re.findall(pattern, hypothesis.lower())
+    return edit_distance(ref, hyp), len(ref)
+
+
+def load_cases(args) -> list[tuple[str, str, Path]]:
+    if args.manifest:
+        cases = []
+        with args.manifest.open(encoding="utf-8", newline="") as fh:
+            for row in csv.DictReader(fh, delimiter="\t"):
+                wav = Path(row["wav"])
+                if not wav.is_absolute():
+                    wav = args.manifest.parent / wav
+                expected = row.get("actual_text") or row["target_text"]
+                cases.append((row["id"], expected, wav))
+        return cases
+    return [(cid, expected, args.wav_dir / f"{cid}_16k.wav") for cid, expected in CASES]
+
+
 def read_pcm16_mono_16k(path: Path) -> bytes:
     with wave.open(str(path), "rb") as wf:
         if wf.getnchannels() != 1:
@@ -111,6 +140,11 @@ def recognize_current(asr, final_asr, pcm: bytes) -> tuple[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="TSV produced by 14-record-samples.sh (uses actual_text)",
+    )
+    parser.add_argument(
         "--wav-dir",
         type=Path,
         default=ROOT / "logs",
@@ -123,6 +157,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.manifest and args.output == ROOT / "logs" / "current_asr_cer.tsv":
+        args.output = args.manifest.parent / "asr-evaluation.tsv"
+
     print("Loading current VoiceIME recognizers...")
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
@@ -131,9 +168,16 @@ def main() -> int:
     total_edits = 0
     total_ref_chars = 0
     exact_count = 0
+    raw_edits = 0
+    raw_chars = 0
+    category_totals = {
+        "english": [0, 0],
+        "number": [0, 0],
+        "punctuation": [0, 0],
+        "code": [0, 0],
+    }
 
-    for cid, expected in CASES:
-        wav = args.wav_dir / f"{cid}_16k.wav"
+    for cid, expected, wav in load_cases(args):
         if not wav.exists():
             print(f"{cid}: SKIP missing {wav}")
             continue
@@ -141,12 +185,27 @@ def main() -> int:
         pcm = read_pcm16_mono_16k(wav)
         streaming, final = recognize_current(asr, final_asr, pcm)
         distance, rate = cer(expected, final)
+        raw_distance, raw_rate = raw_cer(expected, final)
         ref_len = len(normalize(expected))
         exact = normalize(expected) == normalize(final)
 
         total_edits += distance
         total_ref_chars += ref_len
         exact_count += int(exact)
+        raw_edits += raw_distance
+        raw_chars += len(expected)
+        category_values = {}
+        for name, pattern in {
+            "english": r"[a-z]+(?:[_-][a-z0-9]+)*",
+            "number": r"\d+(?:\.\d+)*",
+            "punctuation": r"[，。！？；：、“”‘’（）(),.!?;:_-]",
+            "code": r"\b[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+\b",
+        }.items():
+            errors, count = token_distance(pattern, expected, final)
+            category_totals[name][0] += errors
+            category_totals[name][1] += count
+            category_values[f"{name}_errors"] = errors
+            category_values[f"{name}_reference"] = count
         rows.append({
             "case": cid,
             "expected": expected,
@@ -155,7 +214,9 @@ def main() -> int:
             "edit_distance": distance,
             "ref_chars": ref_len,
             "cer": f"{rate:.6f}",
+            "raw_cer": f"{raw_rate:.6f}",
             "exact": "1" if exact else "0",
+            **category_values,
         })
 
         print(f"{cid}: expected={expected}")
@@ -174,6 +235,10 @@ def main() -> int:
             fieldnames=[
                 "case", "expected", "streaming", "final",
                 "edit_distance", "ref_chars", "cer", "exact",
+                "raw_cer", "english_errors", "english_reference",
+                "number_errors", "number_reference",
+                "punctuation_errors", "punctuation_reference",
+                "code_errors", "code_reference",
             ],
             delimiter="\t",
         )
@@ -184,8 +249,15 @@ def main() -> int:
     print()
     print(
         f"SUMMARY cases={len(rows)} exact={exact_count}/{len(rows)} "
-        f"micro_CER={micro_cer:.2%}"
+        f"content_accuracy={1 - micro_cer:.2%} "
+        f"raw_accuracy={1 - raw_edits / max(raw_chars, 1):.2%}"
     )
+    for name, (errors, count) in category_totals.items():
+        if count:
+            accuracy = max(0.0, 1 - errors / count)
+            print(f"{name}_accuracy={accuracy:.2%} (errors={errors}, reference={count})")
+        else:
+            print(f"{name}_accuracy=N/A (no reference tokens)")
     print(f"TSV: {args.output}")
     return 0
 

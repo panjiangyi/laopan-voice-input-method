@@ -23,6 +23,14 @@ class BenchmarkMetricTests(unittest.TestCase):
         self.assertGreater(SUITE["cer"]("版本1.5", "版本15")[0], 0)
         self.assertGreater(SUITE["cer"]("user_id", "userid")[0], 0)
 
+    def test_raw_cer_counts_formatting(self):
+        self.assertEqual(SUITE["raw_cer"]("你好。", "你好")[0], 1)
+
+    def test_category_tokens_measure_english_and_numbers(self):
+        token_distance = SUITE["token_distance"]
+        self.assertEqual(token_distance(r"[a-z]+", "use GitHub", "use gitlab"), (1, 2))
+        self.assertEqual(token_distance(r"\d+", "版本 123", "版本 12"), (1, 1))
+
 
 if __name__ == "__main__":
     unittest.main()

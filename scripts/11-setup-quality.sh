@@ -16,5 +16,7 @@ fi
 test -f "$DIR/model.int8.onnx"
 test -f "$DIR/tokens.txt"
 echo "Installed: $DIR"
+echo "FireRed is installed for A/B testing but remains disabled by default."
+echo "Set VOICEIME_FINAL_ENABLED=1 only after it improves your own benchmark."
 echo "Restarting VoiceIME..."
 systemctl --user restart voiceime-ptt.service || true

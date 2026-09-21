@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Non-focus-stealing VoiceIME recording and correction indicator."""
+from __future__ import annotations
+
+import json
+import math
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+import cairo  # noqa: E402
+
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+ENGINE_STATE = RUNTIME / "voiceime-engine.state"
+CORRECTION_STATE = RUNTIME / "voiceime-correction.state"
+RESULT_SECONDS = 1.5
+
+
+class Indicator(Gtk.Window):
+    def __init__(self) -> None:
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_title("VoiceIME Indicator")
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_accept_focus(False)
+        self.set_focus_on_map(False)
+        self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        self.set_default_size(260, 84)
+        self.set_app_paintable(True)
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+
+        self.area = Gtk.DrawingArea()
+        self.area.set_size_request(260, 84)
+        self.area.connect("draw", self.draw)
+        self.add(self.area)
+        self.mode = "hidden"
+        self.phase = 0.0
+        self.last_result_key = ""
+        GLib.timeout_add(40, self.tick)
+
+    @staticmethod
+    def read_text(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def correction(self) -> tuple[str, float, str]:
+        try:
+            value = json.loads(self.read_text(CORRECTION_STATE) or "{}")
+            return (
+                str(value.get("status", "idle")),
+                float(value.get("time", 0)),
+                str(value.get("session", "")),
+            )
+        except (ValueError, TypeError):
+            return "idle", 0.0, ""
+
+    def active_monitor(self):
+        display = Gdk.Display.get_default()
+        try:
+            output = subprocess.check_output(
+                ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"],
+                text=True, stderr=subprocess.DEVNULL, timeout=0.15,
+            )
+            values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+            x = int(values["X"]) + int(values["WIDTH"]) // 2
+            y = int(values["Y"]) + int(values["HEIGHT"]) // 2
+            return display.get_monitor_at_point(x, y)
+        except (OSError, subprocess.SubprocessError, KeyError, ValueError):
+            seat = display.get_default_seat()
+            _screen, x, y = seat.get_pointer().get_position()
+            return display.get_monitor_at_point(x, y)
+
+    def place(self) -> None:
+        monitor = self.active_monitor()
+        geometry = monitor.get_workarea()
+        width, height = self.get_size()
+        x = geometry.x + (geometry.width - width) // 2
+        y = geometry.y + int(geometry.height * 0.72) - height // 2
+        self.move(x, y)
+
+    def tick(self) -> bool:
+        engine = self.read_text(ENGINE_STATE)
+        status, changed, session = self.correction()
+        if engine == "recording":
+            wanted = "recording"
+        elif status == "correcting":
+            wanted = "correcting"
+        elif status in {"success", "failed", "timeout"} and time.time() - changed < RESULT_SECONDS:
+            wanted = status
+        else:
+            wanted = "hidden"
+
+        result_key = f"{session}:{status}:{changed}"
+        if wanted != self.mode or (wanted != "hidden" and result_key != self.last_result_key):
+            self.mode = wanted
+            self.last_result_key = result_key
+            if wanted == "hidden":
+                self.hide()
+            else:
+                self.place()
+                self.show_all()
+        self.phase += 0.22
+        if self.mode != "hidden":
+            self.area.queue_draw()
+        return True
+
+    def draw(self, _widget, cr) -> bool:
+        width = self.area.get_allocated_width()
+        height = self.area.get_allocated_height()
+        cr.set_source_rgba(0.055, 0.065, 0.09, 0.92)
+        radius = 20
+        cr.new_sub_path()
+        cr.arc(width-radius, radius, radius, -math.pi/2, 0)
+        cr.arc(width-radius, height-radius, radius, 0, math.pi/2)
+        cr.arc(radius, height-radius, radius, math.pi/2, math.pi)
+        cr.arc(radius, radius, radius, math.pi, 3*math.pi/2)
+        cr.close_path()
+        cr.fill()
+
+        if self.mode == "recording":
+            cr.set_line_width(4)
+            cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.set_source_rgb(0.31, 0.78, 1.0)
+            for index in range(9):
+                amplitude = 8 + 15 * abs(math.sin(self.phase + index * 0.62))
+                x = width / 2 - 64 + index * 16
+                cr.move_to(x, height / 2 - amplitude / 2)
+                cr.line_to(x, height / 2 + amplitude / 2)
+                cr.stroke()
+            return False
+
+        labels = {
+            "correcting": ("纠错中", (0.42, 0.72, 1.0)),
+            "success": ("纠错完成", (0.35, 0.85, 0.57)),
+            "failed": ("纠错失败", (1.0, 0.45, 0.45)),
+            "timeout": ("纠错超时", (1.0, 0.70, 0.30)),
+        }
+        label, color = labels.get(self.mode, ("", (1, 1, 1)))
+        cr.set_source_rgb(*color)
+        cr.select_font_face("Noto Sans CJK SC", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(23)
+        ext = cr.text_extents(label)
+        cr.move_to((width - ext.width) / 2 - ext.x_bearing, (height - ext.height) / 2 - ext.y_bearing)
+        cr.show_text(label)
+        return False
+
+
+def main() -> int:
+    window = Indicator()
+    window.connect("destroy", Gtk.main_quit)
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2,9 +2,25 @@
 set -u
 source "$(cd -- "$(dirname -- "$0")" && pwd)/voiceime-lib.sh"
 pid="$(voiceime_pid 2>/dev/null || true)"
+service_env="$(systemctl --user show "$UNIT" -p Environment --value 2>/dev/null || true)"
+engine="${VOICEIME_ENGINE:-sherpa}"
+llm_enabled="${VOICEIME_LLM_ENABLED:-0}"
+llm_mode="${VOICEIME_LLM_MODE:-punctuation}"
+llm_timeout="${VOICEIME_LLM_TIMEOUT:-15.0}"
+deepseek_model="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+for setting in $service_env; do
+  case "$setting" in
+    VOICEIME_ENGINE=*) engine="${setting#*=}" ;;
+    VOICEIME_LLM_ENABLED=*) llm_enabled="${setting#*=}" ;;
+    VOICEIME_LLM_MODE=*) llm_mode="${setting#*=}" ;;
+    VOICEIME_LLM_TIMEOUT=*) llm_timeout="${setting#*=}" ;;
+    DEEPSEEK_MODEL=*) deepseek_model="${setting#*=}" ;;
+  esac
+done
 echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
-echo "engine:    ${VOICEIME_ENGINE:-sherpa}"
-echo "llm:       enabled=${VOICEIME_LLM_ENABLED:-0} mode=${VOICEIME_LLM_MODE:-punctuation} timeout=${VOICEIME_LLM_TIMEOUT:-2.0}s"
+echo "overlay:   $(systemctl --user is-active voiceime-overlay.service 2>/dev/null || echo unknown)"
+echo "engine:    $engine"
+echo "llm:       enabled=$llm_enabled mode=$llm_mode timeout=${llm_timeout}s"
 echo "state:     $(voiceime_state)  (pid ${pid:--})"
 echo "instances: $(voiceime_pids | wc -l)"
 if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
@@ -12,30 +28,9 @@ if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
 else
   echo "output:    Fcitx5 native (bridge unavailable)"
 fi
-corr="${VOICEIME_LLM_ENDPOINT:-http://127.0.0.1:19888}"
-if health=$(curl -fsS --max-time 1 "$corr/health" 2>/dev/null); then
-  backend=$(printf '%s' "$health" | python3 -c "
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(d.get('backend') or d.get('model_dir') or 'unknown')
-except Exception:
-    print('unknown')
-")
-  variant=$(printf '%s' "$health" | python3 -c "
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(d.get('variant') or d.get('reasoning_effort') or '')
-except Exception:
-    pass
-" 2>/dev/null)
-  if [ -n "$variant" ]; then
-    echo "corrector: $corr (ready; $backend, variant=$variant)"
-  else
-    echo "corrector: $corr (ready; $backend)"
-  fi
+if [ -s "$ROOT/.env" ] && grep -q '^DEEPSEEK_API_KEY=' "$ROOT/.env"; then
+  echo "corrector: direct DeepSeek API (configured; model=$deepseek_model)"
 else
-  echo "corrector: $corr (unreachable)"
+  echo "corrector: direct DeepSeek API (missing .env credentials)"
 fi
 echo "mic:       $("$ROOT/voiceime-mic")"

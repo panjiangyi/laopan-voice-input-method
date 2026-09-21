@@ -16,6 +16,52 @@ die()  { printf 'build-and-start: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "do not run as root; the daemon runs as your user"
 
+# Collect all correction choices in one place. Environment variables remain
+# the non-interactive interface for automation; a terminal gets friendly
+# prompts with conservative defaults.
+LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
+LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
+LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
+DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+
+if [ -t 0 ]; then
+  step "Configure AI correction"
+  read -r -p "Enable AI correction after each utterance? [y/N] " answer
+  case "${answer:-N}" in
+    [Yy]*) LLM_ENABLED=1 ;;
+    *) LLM_ENABLED=0 ;;
+  esac
+
+  if [ "$LLM_ENABLED" = 1 ]; then
+    printf '%s\n' \
+      'Correction mode:' \
+      '  1) punctuation — only punctuation/spacing (recommended)' \
+      '  2) aggressive  — may repair words, but can change meaning'
+    read -r -p "Choose [1]: " answer
+    case "${answer:-1}" in
+      1) LLM_MODE=punctuation ;;
+      2) LLM_MODE=aggressive ;;
+      *) die "invalid correction mode: $answer" ;;
+    esac
+
+    read -r -p "DeepSeek model [$DEEPSEEK_MODEL]: " answer
+    DEEPSEEK_MODEL="${answer:-$DEEPSEEK_MODEL}"
+
+    read -r -p "Engine wait timeout in seconds [$LLM_TIMEOUT]: " answer
+    LLM_TIMEOUT="${answer:-$LLM_TIMEOUT}"
+  fi
+fi
+
+case "$LLM_ENABLED" in 0|1) ;; *) die "VOICEIME_LLM_ENABLED must be 0 or 1" ;; esac
+case "$LLM_MODE" in punctuation|aggressive) ;; *) die "invalid VOICEIME_LLM_MODE: $LLM_MODE" ;; esac
+[[ "$LLM_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "LLM timeout must be a positive number"
+[[ "$DEEPSEEK_MODEL" =~ ^[A-Za-z0-9._:/+-]+$ ]] || die "model name contains unsupported characters"
+
+export VOICEIME_LLM_ENABLED="$LLM_ENABLED"
+export VOICEIME_LLM_MODE="$LLM_MODE"
+export VOICEIME_LLM_TIMEOUT="$LLM_TIMEOUT"
+export DEEPSEEK_MODEL
+
 # 0. Make sure the project scripts are executable (a fresh checkout often
 #    loses +x, and 10-install-service.sh also resets these bits).
 step "Refresh executable bits"
@@ -96,18 +142,16 @@ if [ ! -f "$SHERPA_MODEL/tokens.txt" ]; then
   printf 'First-time setup needed; run once:\n  bash scripts/09-setup-sherpa.sh\n\n'
 fi
 
-# 3b. Same idea for the LLM corrector: warn-only, never block PTT.
-#     Without the corrector, voiceime-engine simply skips text refinement.
-step "Verify LLM corrector endpoint"
-CORR="${VOICEIME_LLM_ENDPOINT:-http://127.0.0.1:19888}"
-if curl -fsS --max-time 1 "$CORR/health" >/dev/null 2>&1; then
-  printf '  ✓ LLM corrector reachable at %s\n' "$CORR"
-  printf '    %s\n' "$(curl -fsS --max-time 1 "$CORR/health" | head -c 200)"
+# 3b. DeepSeek is called directly by voiceime-engine; retire the old wrapper.
+step "Configure DeepSeek correction"
+systemctl --user disable --now voiceime-corrector.service 2>/dev/null || true
+if [ "$LLM_ENABLED" = 1 ]; then
+  [ -s "$ROOT/.env" ] || die "AI correction enabled but $ROOT/.env is missing"
+  grep -q '^DEEPSEEK_API_KEY=' "$ROOT/.env" || die "DEEPSEEK_API_KEY missing from .env"
+  printf '  ✓ Direct DeepSeek correction enabled: mode=%s model=%s timeout=%ss\n' \
+    "$LLM_MODE" "$DEEPSEEK_MODEL" "$LLM_TIMEOUT"
 else
-  printf '\nWARNING: LLM corrector not reachable at %s\n' "$CORR"
-  printf 'First-time setup (OpenCode Zen free tier):\n'
-  printf '  OPENCODE_API_KEY=sk-... bash scripts/12-setup-corrector.sh\n'
-  printf '  bash scripts/13-install-corrector-service.sh\n\n'
+  printf '  AI correction disabled\n'
 fi
 
 # 4. Refresh the systemd user unit (idempotent; picks up any new ExecStart
@@ -119,6 +163,7 @@ systemctl --user daemon-reload
 # 5. Start the daemon.
 step "Start voiceime-ptt"
 systemctl --user enable --now voiceime-ptt.service
+systemctl --user enable --now voiceime-overlay.service
 
 # 6. Wait until the daemon is actually idle (suspended = loaded and ready
 #    for PTT) instead of declaring victory on "active" alone.

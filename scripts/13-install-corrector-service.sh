@@ -8,6 +8,8 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$UNIT_DIR"
+MODEL="${VOICEIME_CORRECTOR_MODEL:-opencode/muse-spark-1.3-contributor-free}"
+VARIANT="${VOICEIME_CORRECTOR_VARIANT:-xhigh}"
 
 # Locate the opencode binary so the unit file uses an absolute path and
 # doesn't depend on the user's PATH after a non-login session starts.
@@ -31,7 +33,7 @@ fi
 
 cat > "$UNIT_DIR/voiceime-corrector.service" <<EOF
 [Unit]
-Description=VoiceIME corrector (subprocess wrapper for opencode run → muse-spark-1.3 free, xhigh reasoning)
+Description=VoiceIME AI text corrector
 After=default.target
 PartOf=graphical-session.target
 
@@ -45,8 +47,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PATH=$HOME/.opencode/bin:/usr/local/bin:/usr/bin:/bin
 Environment=VOICEIME_CORRECTOR_HOST=127.0.0.1
 Environment=VOICEIME_CORRECTOR_PORT=19888
-Environment=VOICEIME_CORRECTOR_MODEL=opencode/muse-spark-1.3-contributor-free
-Environment=VOICEIME_CORRECTOR_VARIANT=xhigh
+Environment=VOICEIME_CORRECTOR_MODEL=$MODEL
+Environment=VOICEIME_CORRECTOR_VARIANT=$VARIANT
 
 [Install]
 WantedBy=default.target
@@ -54,7 +56,9 @@ EOF
 
 chmod +x "$ROOT/voiceime-corrector" "$ROOT/voiceime-engine" "$ROOT/voiceime-ptt"
 systemctl --user daemon-reload
-systemctl --user enable --now voiceime-corrector.service
+systemctl --user daemon-reload
+systemctl --user enable voiceime-corrector.service
+systemctl --user restart voiceime-corrector.service
 
 # Wait briefly for the port to come up so the user sees an immediate ✓.
 echo -n "Waiting for voiceime-corrector to listen on :19888... "
