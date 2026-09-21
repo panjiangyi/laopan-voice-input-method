@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""Stable streaming ASR engine for VoiceIME.
+
+Default backend: sherpa-onnx streaming Paraformer (Chinese + English).
+The process is kept warm. SIGCONT starts one utterance; SIGUSR1 finalizes it
+and the process SIGSTOPs itself. SIGTERM exits cleanly.
+
+Text is delivered to the existing Fcitx5 addon over one persistent D-Bus
+connection. No subprocess is spawned per partial result.
+"""
+from __future__ import annotations
+
+import fcntl
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent
+MODEL_DIR = Path(os.environ.get(
+    "VOICEIME_SHERPA_MODEL",
+    ROOT / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+))
+SAMPLE_RATE = 16000
+CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
+PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
+MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
+MIC_SCRIPT = ROOT / "voiceime-mic"
+LOCK = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "voiceime-engine.lock"
+
+terminate = False
+finish_utterance = False
+
+
+def log(msg: str) -> None:
+    sys.stderr.write(f"[voiceime-engine] {msg}\n")
+    sys.stderr.flush()
+
+
+class FcitxBridge:
+    def __init__(self) -> None:
+        self._gio = None
+        self._bus = None
+        try:
+            import gi
+            from gi.repository import Gio, GLib  # type: ignore
+            self._gio = (Gio, GLib)
+            self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            log("using persistent Gio D-Bus connection")
+        except Exception as ex:
+            log(f"Gio unavailable, using busctl fallback: {ex!r}")
+
+    def _call(self, method: str, remove: int = 0, text: str = "") -> bool:
+        if self._bus is not None and self._gio is not None:
+            Gio, GLib = self._gio
+            params = None if method == "Begin" else GLib.Variant("(is)", (remove, text))
+            reply = self._bus.call_sync(
+                "org.voiceime.Input",
+                "/org/voiceime/Input",
+                "org.voiceime.Input1",
+                method,
+                params,
+                GLib.VariantType("(b)"),
+                Gio.DBusCallFlags.NONE,
+                1200,
+                None,
+            )
+            return bool(reply.unpack()[0])
+
+        cmd = [
+            "busctl", "--user", "--timeout=1", "call",
+            "org.voiceime.Input", "/org/voiceime/Input",
+            "org.voiceime.Input1", method,
+        ]
+        if method != "Begin":
+            cmd += ["is", str(remove), text]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
+    def begin(self) -> bool:
+        return self._call("Begin")
+
+    def update(self, remove: int, text: str) -> bool:
+        return self._call("Update", remove, text)
+
+
+class TextReconciler:
+    def __init__(self, bridge: FcitxBridge) -> None:
+        self.bridge = bridge
+        self.current = ""
+        self.last_emit = 0.0
+
+    @staticmethod
+    def patch(old: str, new: str) -> tuple[int, str]:
+        n = min(len(old), len(new))
+        i = 0
+        while i < n and old[i] == new[i]:
+            i += 1
+        return len(old) - i, new[i:]
+
+    def emit(self, text: str, *, force: bool = False) -> bool:
+        text = text.strip()
+        if text == self.current:
+            return True
+        now = time.monotonic()
+        if not force and now - self.last_emit < PARTIAL_MIN_INTERVAL:
+            return True
+        remove, append = self.patch(self.current, text)
+        if not self.bridge.update(remove, append):
+            return False
+        self.current = text
+        self.last_emit = now
+        return True
+
+
+class SherpaRecognizer:
+    def __init__(self) -> None:
+        try:
+            import sherpa_onnx
+        except ImportError:
+            raise SystemExit("sherpa-onnx missing; run scripts/09-setup-sherpa.sh")
+
+        tokens = MODEL_DIR / "tokens.txt"
+        encoder = next((p for p in (
+            MODEL_DIR / "encoder.int8.onnx", MODEL_DIR / "encoder.onnx"
+        ) if p.exists()), None)
+        decoder = next((p for p in (
+            MODEL_DIR / "decoder.int8.onnx", MODEL_DIR / "decoder.onnx"
+        ) if p.exists()), None)
+        if not tokens.exists() or encoder is None or decoder is None:
+            raise SystemExit(f"Sherpa model is incomplete: {MODEL_DIR}")
+
+        threads = max(1, min(4, (os.cpu_count() or 2) // 2))
+        log(f"loading sherpa model from {MODEL_DIR} with {threads} threads")
+        self.recognizer = sherpa_onnx.OnlineRecognizer.from_paraformer(
+            tokens=str(tokens),
+            encoder=str(encoder),
+            decoder=str(decoder),
+            num_threads=threads,
+            sample_rate=SAMPLE_RATE,
+            feature_dim=80,
+            decoding_method="greedy_search",
+            enable_endpoint_detection=False,
+        )
+        log("sherpa model loaded")
+
+    def create_stream(self):
+        return self.recognizer.create_stream()
+
+    def accept_pcm(self, stream, pcm: bytes) -> None:
+        if len(pcm) < 2:
+            return
+        if len(pcm) & 1:
+            pcm = pcm[:-1]
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        stream.accept_waveform(SAMPLE_RATE, samples)
+
+    def decode_ready(self, stream) -> None:
+        while self.recognizer.is_ready(stream):
+            self.recognizer.decode_stream(stream)
+
+    def text(self, stream) -> str:
+        value = self.recognizer.get_result(stream)
+        return value.text if hasattr(value, "text") else str(value)
+
+    def finalize(self, stream) -> str:
+        stream.accept_waveform(
+            SAMPLE_RATE, np.zeros(int(0.35 * SAMPLE_RATE), dtype=np.float32)
+        )
+        try:
+            stream.input_finished()
+        except Exception:
+            pass
+        self.decode_ready(stream)
+        return self.text(stream)
+
+
+def resolve_mic() -> str:
+    try:
+        return subprocess.check_output([str(MIC_SCRIPT)], text=True, timeout=2).strip()
+    except Exception:
+        return ""
+
+
+def start_recorder(mic: str) -> subprocess.Popen:
+    cmd = [
+        "parec", "--record", f"--rate={SAMPLE_RATE}", "--channels=1",
+        "--format=s16ne", "--latency=10",
+    ]
+    if mic:
+        cmd.append(f"--device={mic}")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    assert proc.stdout is not None
+    flags = fcntl.fcntl(proc.stdout.fileno(), fcntl.F_GETFL)
+    fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    return proc
+
+
+def stop_recorder(proc: subprocess.Popen) -> bytes:
+    extra = bytearray()
+    if proc.poll() is None:
+        try:
+            proc.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 0.6
+    if proc.stdout is not None:
+        while time.monotonic() < deadline:
+            try:
+                data = os.read(proc.stdout.fileno(), 65536)
+            except BlockingIOError:
+                data = b""
+            if data:
+                extra.extend(data)
+                continue
+            if proc.poll() is not None:
+                break
+            time.sleep(0.01)
+    if proc.poll() is None:
+        proc.kill()
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    return bytes(extra)
+
+
+def on_finish(_sig, _frame) -> None:
+    global finish_utterance
+    finish_utterance = True
+
+
+def on_term(_sig, _frame) -> None:
+    global terminate, finish_utterance
+    terminate = True
+    finish_utterance = True
+
+
+def single_instance():
+    fh = open(LOCK, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("another engine is already running")
+        raise SystemExit(0)
+    return fh
+
+
+def run_utterance(asr: SherpaRecognizer, bridge: FcitxBridge) -> None:
+    global finish_utterance
+    finish_utterance = False
+
+    if not bridge.begin():
+        log("no focused Fcitx input context")
+        return
+
+    reconciler = TextReconciler(bridge)
+    stream = asr.create_stream()
+    recorder = start_recorder(resolve_mic())
+    assert recorder.stdout is not None
+    poller = select.poll()
+    poller.register(
+        recorder.stdout.fileno(), select.POLLIN | select.POLLHUP | select.POLLERR
+    )
+
+    started = time.monotonic()
+    log("recording")
+    try:
+        while not finish_utterance and not terminate:
+            if time.monotonic() - started > MAX_UTTERANCE_SEC:
+                log("utterance safety timeout")
+                break
+            events = poller.poll(CHUNK_MS)
+            if events:
+                try:
+                    data = os.read(recorder.stdout.fileno(), 65536)
+                except BlockingIOError:
+                    data = b""
+                if data:
+                    asr.accept_pcm(stream, data)
+                    asr.decode_ready(stream)
+                    text = asr.text(stream)
+                    if text and not reconciler.emit(text):
+                        log("Fcitx focus changed; ending utterance")
+                        break
+            if recorder.poll() is not None:
+                log("recorder exited unexpectedly")
+                break
+    finally:
+        tail = stop_recorder(recorder)
+        if tail:
+            asr.accept_pcm(stream, tail)
+        final = asr.finalize(stream)
+        if final:
+            reconciler.emit(final, force=True)
+        log(f"utterance finished chars={len(reconciler.current)}")
+
+
+def main() -> int:
+    _lock = single_instance()
+    signal.signal(signal.SIGUSR1, on_finish)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+
+    bridge = FcitxBridge()
+    asr = SherpaRecognizer()
+
+    while not terminate:
+        log("ready; suspended")
+        os.kill(os.getpid(), signal.SIGSTOP)
+        if terminate:
+            break
+        try:
+            run_utterance(asr, bridge)
+        except Exception as ex:
+            log(f"utterance failed: {ex!r}")
+            time.sleep(0.05)
+    log("stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
