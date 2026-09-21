@@ -34,7 +34,8 @@ jobs:
             fcitx5 -d
             ready=0
             for i in $(seq 1 50); do
-              if busctl --user status org.voiceime.Input >/dev/null 2>&1; then
+              if busctl --user status org.voiceime.Input >/dev/null 2>&1 \
+                && busctl --user status org.fcitx.Fcitx5 >/dev/null 2>&1; then
                 ready=1
                 break
               fi
