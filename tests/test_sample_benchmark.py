@@ -24,6 +24,24 @@ class SampleBenchmarkTests(unittest.TestCase):
         self.assertEqual(edits, 2)
         self.assertEqual(total, 2)
 
+    def test_hybrid_rejects_fire_red_when_ascii_tokens_change(self):
+        choose = M["choose_hybrid"]
+        text, reason = choose(
+            "打开 vs code 搜索 final recognizer",
+            "打开S COAT搜索 FINCOGONNZER",
+        )
+        self.assertEqual(text, "打开 vs code 搜索 final recognizer")
+        self.assertEqual(reason, "streaming-protected-ascii")
+
+    def test_hybrid_allows_case_only_ascii_and_chinese_recovery(self):
+        choose = M["choose_hybrid"]
+        text, reason = choose(
+            "这个 bug 偶尔出现大概十次里会浮现两到",
+            "这个 BUG偶尔出现大概十次里会复现两到三次",
+        )
+        self.assertEqual(text, "这个 BUG偶尔出现大概十次里会复现两到三次")
+        self.assertEqual(reason, "fire-red")
+
     def test_token_recall_requires_literal_technical_tokens(self):
         tokens = M["extract_tokens"](M["TOKEN_RE"], "GitHub Actions 和 user_id")
         hits, total = M["token_hits"](tokens, "github actions 和 userid")
