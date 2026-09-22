@@ -66,7 +66,7 @@ Environment=DISPLAY=${DISPLAY:-:1}
 WantedBy=default.target
 EOF
 
-chmod +x "$ROOT/voiceime-engine" "$ROOT/voiceime-ptt" "$ROOT/voiceime-reset" "$ROOT/voiceime-mic" "$ROOT/voiceime-overlay"
+chmod +x "$ROOT/voiceime-engine" "$ROOT/voiceime-ptt" "$ROOT/voiceime-reset" "$ROOT/voiceime-mic" "$ROOT/voiceime-overlay" "$ROOT/voiceime-hotwords"
 systemctl --user daemon-reload
 systemctl --user enable voiceime-ptt.service
 systemctl --user enable voiceime-overlay.service
