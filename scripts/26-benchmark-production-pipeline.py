@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Benchmark the exact production final-text pipeline on real VoiceIME audio.
+"""Benchmark the exact default VoiceIME mixed-language production gate.
 
-Pipeline:
-  offline Paraformer large
-  -> deterministic whitelist GlossaryCorrector
+This reports both the quality ceiling (offline final used for every utterance)
+and the actual bounded-latency default:
+  streaming Paraformer
+  -> offline Paraformer large only when audio <= max_audio AND inference
+     finishes within max_wait
+  -> deterministic glossary correction
   -> guarded local punctuation restoration
 """
 from __future__ import annotations
@@ -15,16 +18,17 @@ import time
 import wave
 from collections import Counter
 from pathlib import Path
+import sys
 
 import numpy as np
 import sherpa_onnx
 
-import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from voiceime_glossary import GlossaryCorrector  # noqa: E402
 
 SAMPLE_RATE = 16000
+STREAMING = ROOT / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en"
 FINAL = ROOT / "models" / "sherpa-onnx-paraformer-zh-2024-03-09"
 PUNCT = (
     ROOT / "models"
@@ -89,7 +93,6 @@ def normalize_content(text: str) -> str:
 
 
 def semantic_signature(text: str) -> str:
-    # Same conservative contract as runtime punctuation guard.
     chars = list(text)
     out: list[str] = []
 
@@ -189,7 +192,28 @@ def load_samples(manifest: Path):
             yield row["id"], ref, audio, frames / SAMPLE_RATE
 
 
-def make_asr():
+def pick(directory: Path, *names: str) -> Path:
+    for name in names:
+        path = directory / name
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"none of {names!r} found in {directory}")
+
+
+def make_streaming():
+    return sherpa_onnx.OnlineRecognizer.from_paraformer(
+        tokens=str(pick(STREAMING, "tokens.txt")),
+        encoder=str(pick(STREAMING, "encoder.int8.onnx", "encoder.onnx")),
+        decoder=str(pick(STREAMING, "decoder.int8.onnx", "decoder.onnx")),
+        num_threads=4,
+        sample_rate=SAMPLE_RATE,
+        feature_dim=80,
+        decoding_method="greedy_search",
+        enable_endpoint_detection=False,
+    )
+
+
+def make_final():
     return sherpa_onnx.OfflineRecognizer.from_paraformer(
         paraformer=str(FINAL / "model.int8.onnx"),
         tokens=str(FINAL / "tokens.txt"),
@@ -208,7 +232,25 @@ def make_punctuation():
     return sherpa_onnx.OfflinePunctuation(cfg)
 
 
-def decode(asr, audio: np.ndarray) -> str:
+def decode_streaming(asr, audio: np.ndarray) -> str:
+    stream = asr.create_stream()
+    chunk = int(SAMPLE_RATE * 0.08)
+    for start in range(0, len(audio), chunk):
+        stream.accept_waveform(SAMPLE_RATE, audio[start:start + chunk])
+        while asr.is_ready(stream):
+            asr.decode_stream(stream)
+    stream.accept_waveform(SAMPLE_RATE, np.zeros(SAMPLE_RATE, dtype=np.float32))
+    try:
+        stream.input_finished()
+    except Exception:
+        pass
+    while asr.is_ready(stream):
+        asr.decode_stream(stream)
+    result = asr.get_result(stream)
+    return (result.text if hasattr(result, "text") else str(result)).strip()
+
+
+def decode_final(asr, audio: np.ndarray) -> str:
     stream = asr.create_stream()
     stream.accept_waveform(SAMPLE_RATE, audio)
     asr.decode_stream(stream)
@@ -216,9 +258,31 @@ def decode(asr, audio: np.ndarray) -> str:
     return (result.text if hasattr(result, "text") else str(result)).strip()
 
 
+def safe_punctuate(punctuation, text: str) -> tuple[str, bool]:
+    candidate = punctuation.add_punctuation(text).strip()
+    if candidate and semantic_signature(text) == semantic_signature(candidate):
+        return candidate, False
+    return text, bool(candidate and candidate != text)
+
+
+def add_metrics(counter: Counter, ref: str, hyp: str) -> None:
+    ce, cn = content_pair(ref, hyp)
+    ze, zn = cjk_pair(ref, hyp)
+    eh, en = token_hits(ref, hyp)
+    pe, pn = punct_pair(ref, hyp)
+    counter.update(
+        content_edits=ce, content_chars=cn,
+        cjk_edits=ze, cjk_chars=zn,
+        english_hits=eh, english_total=en,
+        punct_edits=pe, punct_total=pn,
+    )
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("manifest", type=Path)
+    p.add_argument("--max-wait", type=float, default=1.2)
+    p.add_argument("--max-audio", type=float, default=10.0)
     p.add_argument(
         "--output-dir",
         type=Path,
@@ -226,64 +290,74 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    asr = make_asr()
+    streaming_asr = make_streaming()
+    final_asr = make_final()
     glossary = GlossaryCorrector()
     punctuation = make_punctuation()
+
     stages = {
-        "offline-paraformer": Counter(),
-        "plus-glossary": Counter(),
-        "production-final": Counter(),
+        "streaming": Counter(),
+        "streaming+glossary+punct": Counter(),
+        "offline-quality-ceiling": Counter(),
+        "default-gated-production": Counter(),
     }
     rows = []
-    total_audio = total_compute = 0.0
+    total_audio = total_final_compute = 0.0
     punctuation_rejected = 0
+    final_used = final_timeout = final_long_skip = 0
 
     for sid, ref, audio, duration in load_samples(args.manifest):
-        started = time.monotonic()
-        raw = decode(asr, audio)
-        gloss = glossary.correct(raw)
-        punct_candidate = punctuation.add_punctuation(gloss).strip()
-        if punct_candidate and semantic_signature(gloss) == semantic_signature(
-            punct_candidate
-        ):
-            final = punct_candidate
-        else:
-            final = gloss
-            if punct_candidate and punct_candidate != gloss:
-                punctuation_rejected += 1
-        elapsed = time.monotonic() - started
+        streaming = decode_streaming(streaming_asr, audio)
+        streaming_gloss = glossary.correct(streaming)
+        streaming_post, rejected = safe_punctuate(punctuation, streaming_gloss)
+        punctuation_rejected += int(rejected)
+
+        final_started = time.monotonic()
+        raw_final = decode_final(final_asr, audio)
+        final_elapsed = time.monotonic() - final_started
+        total_final_compute += final_elapsed
         total_audio += duration
-        total_compute += elapsed
+
+        final_gloss = glossary.correct(raw_final)
+        final_post, rejected = safe_punctuate(punctuation, final_gloss)
+        punctuation_rejected += int(rejected)
+
+        if duration > args.max_audio:
+            production = streaming_post
+            decision = "streaming-long"
+            final_long_skip += 1
+        elif final_elapsed > args.max_wait:
+            production = streaming_post
+            decision = "streaming-timeout"
+            final_timeout += 1
+        else:
+            production = final_post
+            decision = "offline-final"
+            final_used += 1
 
         stage_texts = {
-            "offline-paraformer": raw,
-            "plus-glossary": gloss,
-            "production-final": final,
+            "streaming": streaming,
+            "streaming+glossary+punct": streaming_post,
+            "offline-quality-ceiling": final_post,
+            "default-gated-production": production,
         }
         for name, hyp in stage_texts.items():
-            ce, cn = content_pair(ref, hyp)
-            ze, zn = cjk_pair(ref, hyp)
-            eh, en = token_hits(ref, hyp)
-            pe, pn = punct_pair(ref, hyp)
-            stages[name].update(
-                content_edits=ce,
-                content_chars=cn,
-                cjk_edits=ze,
-                cjk_chars=zn,
-                english_hits=eh,
-                english_total=en,
-                punct_edits=pe,
-                punct_total=pn,
-            )
+            add_metrics(stages[name], ref, hyp)
+
         rows.append({
             "id": sid,
             "reference": ref,
-            "raw": raw,
-            "glossary": gloss,
-            "final": final,
-            "elapsed_ms": elapsed * 1000,
+            "streaming": streaming,
+            "offline_final": raw_final,
+            "production": production,
+            "decision": decision,
+            "audio_sec": f"{duration:.3f}",
+            "final_elapsed_ms": f"{final_elapsed * 1000:.1f}",
         })
-        print(f"{sid}: {final}")
+        print(
+            f"{sid}: {decision} audio={duration:.2f}s "
+            f"final={final_elapsed:.3f}s  {production}"
+        )
 
     def rate(c: Counter, a: str, b: str):
         return c[a] / c[b] if c[b] else None
@@ -310,14 +384,20 @@ def main() -> int:
     with (args.output_dir / "results.tsv").open(
         "w", encoding="utf-8", newline=""
     ) as fh:
-        fields = ["id", "reference", "raw", "glossary", "final", "elapsed_ms"]
+        fields = [
+            "id", "reference", "streaming", "offline_final", "production",
+            "decision", "audio_sec", "final_elapsed_ms",
+        ]
         w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
         w.writeheader()
         w.writerows(rows)
 
     fmt = lambda v: "n/a" if v is None else f"{v:.2%}"
     report = [
-        "# Production VoiceIME final pipeline benchmark",
+        "# Exact default VoiceIME production benchmark",
+        "",
+        f"Gate: final wait <= **{args.max_wait:.2f}s**, audio <= "
+        f"**{args.max_audio:.2f}s**.",
         "",
         "| Stage | Content CER | Chinese CER | English recall | Punctuation error |",
         "|---|---:|---:|---:|---:|",
@@ -330,13 +410,11 @@ def main() -> int:
         )
     report += [
         "",
-        f"Pipeline RTF: **{total_compute/max(total_audio, 1e-9):.3f}** "
-        f"({total_compute:.2f}s compute / {total_audio:.2f}s audio).",
-        f"Guard rejected **{punctuation_rejected}** punctuation candidates "
-        "that attempted lexical changes.",
-        "",
-        "Streaming baseline on the same corpus: 12.23% content CER, "
-        "8.22% Chinese CER, 58.54% English token recall.",
+        f"Default gate used offline final for **{final_used}/30** samples; "
+        f"timed out on **{final_timeout}**; long-audio skips **{final_long_skip}**.",
+        f"Offline final RTF: **{total_final_compute/max(total_audio, 1e-9):.3f}** "
+        f"({total_final_compute:.2f}s compute / {total_audio:.2f}s audio).",
+        f"Punctuation guard rejected **{punctuation_rejected}** lexical mutations.",
     ]
     (args.output_dir / "report.md").write_text(
         "\n".join(report) + "\n", encoding="utf-8"
