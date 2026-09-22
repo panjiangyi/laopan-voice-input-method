@@ -7,6 +7,7 @@ on:
       - "hotwords/priority.txt"
       - "scripts/11-setup-quality.sh"
       - "scripts/26-benchmark-production-pipeline.py"
+      - "scripts/27-benchmark-number-itn.py"
       - ".github/workflows/production-benchmark.yml"
       - "samples/**"
   workflow_dispatch:
