@@ -48,11 +48,22 @@ jobs:
         run: |
           manifest="$(find samples -maxdepth 2 -name manifest.tsv -print | sort | tail -1)"
           test -n "$manifest"
-          python3 scripts/26-benchmark-production-pipeline.py "$manifest"             --max-wait 1.2 --max-audio 10.0             --output-dir benchmark-results-production
+          python3 scripts/26-benchmark-production-pipeline.py "$manifest" \
+            --max-wait 1.2 --max-audio 10.0 \
+            --output-dir benchmark-results-production
           cat benchmark-results-production/report.md
+      - name: Benchmark official Chinese number ITN
+        run: |
+          curl -fL --retry 3 --retry-delay 2 -o models/itn_zh_number.fst \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/itn_zh_number.fst"
+          manifest="$(find samples -maxdepth 2 -name manifest.tsv -print | sort | tail -1)"
+          python3 scripts/27-benchmark-number-itn.py "$manifest" --output-dir benchmark-results-itn
+          cat benchmark-results-itn/report.md
       - name: Upload production benchmark
         uses: actions/upload-artifact@v4
         with:
           name: production-asr-pipeline-benchmark
-          path: benchmark-results-production/
+          path: |
+            benchmark-results-production/
+            benchmark-results-itn/
           retention-days: 30
