@@ -3,6 +3,7 @@
 #include <fcitx/addonmanager.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputcontextmanager.h>
+#include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
 #include <fcitx/surroundingtext.h>
 #include <fcitx/text.h>
