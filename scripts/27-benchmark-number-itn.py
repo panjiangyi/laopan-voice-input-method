@@ -18,11 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from voiceime_glossary import GlossaryCorrector  # noqa: E402
 
-METRIC = runpy.run_path(str(ROOT / "scripts/15-evaluate-samples.py"))
-metrics = METRIC["metrics"]
-pct = METRIC["pct"]
-ENGINE = runpy.run_path(str(ROOT / "voiceime-engine"))
-semantic_signature = ENGINE["LLMCorrector"]._semantic_signature
+PROD = runpy.run_path(str(ROOT / "scripts/26-benchmark-production-pipeline.py"))
+content_pair = PROD["content_pair"]
+cjk_pair = PROD["cjk_pair"]
+english_hits = PROD["token_hits"]
+punct_pair = PROD["punct_pair"]
+semantic_signature = PROD["semantic_signature"]
 
 FINAL = ROOT / "models/sherpa-onnx-paraformer-zh-2024-03-09"
 ITN = ROOT / "models/itn_zh_number.fst"
@@ -32,6 +33,47 @@ PUNCT = (
     / "model.int8.onnx"
 )
 SAMPLE_RATE = 16000
+NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_])[+-]?\\d+(?:\\.\\d+)*(?![A-Za-z0-9_])")
+CODE_RE = re.compile(
+    r"(?:\\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\\b)"
+    r"|(?:\\b[A-Z][A-Z0-9_]{2,}\\b)"
+    r"|(?:\\b[A-Za-z][A-Za-z0-9]*(?:[.+:/-][A-Za-z0-9+._:/-]+)+\\b)"
+    r"|(?:\\bC\\+\\+\\b)"
+)
+
+
+def literal_hits(regex: re.Pattern[str], reference: str, hypothesis: str) -> tuple[int, int]:
+    expected = Counter(m.group(0).casefold() for m in regex.finditer(reference))
+    lowered = hypothesis.casefold()
+    hits = sum(min(count, lowered.count(token)) for token, count in expected.items())
+    return hits, sum(expected.values())
+
+
+def row_metrics(reference: str, hypothesis: str) -> dict:
+    ce, cn = content_pair(reference, hypothesis)
+    ze, zn = cjk_pair(reference, hypothesis)
+    eh, en = english_hits(reference, hypothesis)
+    nh, nn = literal_hits(NUMBER_RE, reference, hypothesis)
+    kh, kn = literal_hits(CODE_RE, reference, hypothesis)
+    pe, pn = punct_pair(reference, hypothesis)
+    return {
+        "content_edits": ce, "content_chars": cn,
+        "cjk_edits": ze, "cjk_chars": zn,
+        "english_hits": eh, "english_total": en,
+        "number_hits": nh, "number_total": nn,
+        "code_hits": kh, "code_total": kn,
+        "punct_edits": pe, "punct_count": pn,
+        "content_cer": ce / cn if cn else None,
+        "cjk_cer": ze / zn if zn else None,
+        "english_recall": eh / en if en else None,
+        "number_recall": nh / nn if nn else None,
+        "code_recall": kh / kn if kn else None,
+        "punct_error_rate": pe / pn if pn else None,
+    }
+
+
+def pct(v):
+    return "n/a" if v is None else f"{v:.2%}"
 
 
 def samples(manifest: Path):
@@ -118,7 +160,7 @@ def main():
             if candidate and semantic_signature(gloss) == semantic_signature(candidate)
             else gloss
         )
-        m = metrics(ref, final)
+        m = row_metrics(ref, final)
         rows.append({
             "id": sid,
             "reference": ref,
