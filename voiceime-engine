@@ -279,32 +279,48 @@ class TextReconciler:
 
 
 class FinalRecognizer:
-    """Optional high-accuracy second pass using FireRedASR2 CTC."""
+    """Fast high-accuracy final pass using offline Paraformer large.
+
+    Real-speech A/B on the user's 30 recordings:
+      streaming Paraformer:        12.23% content CER
+      offline Paraformer large:     9.61% content CER
+      Qwen3 + priority hotwords:    8.25% content CER, but RTF 1.131
+
+    The offline Paraformer is therefore the production default: it gives most
+    of the quality gain without making the user wait roughly the full utterance
+    duration again. If its model is missing, VoiceIME safely uses the streaming
+    final text.
+    """
 
     def __init__(self) -> None:
         self.recognizer = None
-        if os.environ.get("VOICEIME_FINAL_ENABLED", "0").lower() not in {
+        self.enabled = os.environ.get("VOICEIME_FINAL_ENABLED", "1").lower() in {
             "1", "true", "yes", "on"
-        }:
-            log("final ASR disabled; set VOICEIME_FINAL_ENABLED=1 to test it")
+        }
+        if not self.enabled:
+            log("final ASR disabled")
             return
+
         model_dir = Path(os.environ.get(
             "VOICEIME_FINAL_MODEL",
-            ROOT / "models" / "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",
+            ROOT / "models" / "sherpa-onnx-paraformer-zh-2024-03-09",
         ))
         model = model_dir / "model.int8.onnx"
         tokens = model_dir / "tokens.txt"
         if not model.exists() or not tokens.exists():
-            log("final ASR model not installed; streaming result will be used")
+            log(
+                "offline Paraformer final model not installed; "
+                "streaming result will be used"
+            )
             return
         try:
             import sherpa_onnx
-            self.recognizer = sherpa_onnx.OfflineRecognizer.from_fire_red_asr_ctc(
-                model=str(model),
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                paraformer=str(model),
                 tokens=str(tokens),
                 num_threads=max(1, min(4, (os.cpu_count() or 2) // 2)),
             )
-            log(f"loaded final FireRedASR2 model from {model_dir}")
+            log(f"loaded offline Paraformer final model from {model_dir}")
         except Exception as ex:
             log(f"failed to load final ASR model: {ex!r}")
             self.recognizer = None
@@ -320,6 +336,61 @@ class FinalRecognizer:
         self.recognizer.decode_stream(stream)
         result = stream.result
         return (result.text if hasattr(result, "text") else str(result)).strip()
+
+
+class PunctuationRestorer:
+    """Fast local punctuation restoration with a semantic fail-closed guard."""
+
+    def __init__(self) -> None:
+        self.restorer = None
+        self.enabled = os.environ.get(
+            "VOICEIME_PUNCTUATION_ENABLED", "1"
+        ).lower() in {"1", "true", "yes", "on"}
+        if not self.enabled:
+            return
+        model_dir = Path(os.environ.get(
+            "VOICEIME_PUNCTUATION_MODEL",
+            ROOT / "models"
+            / "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8",
+        ))
+        model = model_dir / "model.int8.onnx"
+        if not model.exists():
+            log("punctuation model not installed; punctuation restoration disabled")
+            return
+        try:
+            import sherpa_onnx
+            config = sherpa_onnx.OfflinePunctuationConfig(
+                model=sherpa_onnx.OfflinePunctuationModelConfig(
+                    ct_transformer=str(model),
+                    num_threads=1,
+                    provider="cpu",
+                )
+            )
+            self.restorer = sherpa_onnx.OfflinePunctuation(config)
+            log(f"loaded punctuation model from {model_dir}")
+        except Exception as ex:
+            log(f"failed to load punctuation model: {ex!r}")
+            self.restorer = None
+
+    def correct(self, text: str) -> str:
+        if not text or self.restorer is None:
+            return text
+        try:
+            candidate = self.restorer.add_punctuation(text).strip()
+        except Exception as ex:
+            log(f"punctuation restoration failed: {ex!r}")
+            return text
+        if not candidate:
+            return text
+        # The punctuation model occasionally changes lexical content. Accept
+        # it only when the exact same conservative semantic guard used by the
+        # LLM path says the text content is unchanged.
+        if LLMCorrector._semantic_signature(text) != LLMCorrector._semantic_signature(
+            candidate
+        ):
+            log("punctuation candidate rejected by semantic guard")
+            return text
+        return candidate
 
 
 class LLMCorrector:
