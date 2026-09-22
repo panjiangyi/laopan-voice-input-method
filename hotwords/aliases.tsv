@@ -1,0 +1,8 @@
+# Common ASR phonetic aliases -> canonical domain term.
+# Exact normalized alias matching only; no free-form replacement.
+Henry Shine	Henry Schein
+Hering Shine	Henry Schein
+Herring Shine	Henry Schein
+Dabby Dental	Darby Dental
+Daby Dental	Darby Dental
+D C Dental	DC Dental
