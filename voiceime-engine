@@ -29,6 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
+from voiceime_glossary import GlossaryCorrector
+
 ROOT = Path(__file__).resolve().parent
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 PARAFORMER_MODEL_DIR = Path(os.environ.get(
@@ -46,6 +48,7 @@ HOTWORDS_FILE = Path(os.environ.get(
 ASR_BACKEND = os.environ.get("VOICEIME_ASR_BACKEND", "paraformer").strip().lower()
 HOTWORDS_SCORE = float(os.environ.get("VOICEIME_HOTWORDS_SCORE", "1.5"))
 HOTWORD_MAX_ACTIVE_PATHS = int(os.environ.get("VOICEIME_HOTWORD_MAX_ACTIVE_PATHS", "4"))
+OUTPUT_MODE = os.environ.get("VOICEIME_OUTPUT_MODE", "preedit").strip().lower()
 SAMPLE_RATE = 16000
 CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
@@ -168,6 +171,54 @@ class FcitxBridge:
                 "org.voiceime.Input", "/org/voiceime/Input",
                 "org.voiceime.Input1", "UpdateSession", "sis",
                 session, str(remove), text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
+    def preview(self, session: str, text: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "PreviewSession", GLib.Variant("(ss)", (session, text)),
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "PreviewSession", "ss", session, text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
+    def commit(self, session: str, text: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "CommitSession", GLib.Variant("(ss)", (session, text)),
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "CommitSession", "ss", session, text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
+    def cancel(self, session: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "CancelSession", GLib.Variant("(s)", (session,)),
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "CancelSession", "s", session,
             ],
             capture_output=True, text=True, timeout=1.5,
         )
