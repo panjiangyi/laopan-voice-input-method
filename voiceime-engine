@@ -29,34 +29,17 @@ from pathlib import Path
 
 import numpy as np
 
-from voiceime_glossary import GlossaryCorrector
-from voiceime_numbers import ContextNumberNormalizer
-
 ROOT = Path(__file__).resolve().parent
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
-PARAFORMER_MODEL_DIR = Path(os.environ.get(
+MODEL_DIR = Path(os.environ.get(
     "VOICEIME_SHERPA_MODEL",
     ROOT / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
 ))
-HOTWORD_MODEL_DIR = Path(os.environ.get(
-    "VOICEIME_HOTWORD_MODEL",
-    ROOT / "models" / "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
-))
-HOTWORDS_FILE = Path(os.environ.get(
-    "VOICEIME_HOTWORDS_FILE",
-    ROOT / "hotwords" / "compiled.txt",
-))
-ASR_BACKEND = os.environ.get("VOICEIME_ASR_BACKEND", "paraformer").strip().lower()
-HOTWORDS_SCORE = float(os.environ.get("VOICEIME_HOTWORDS_SCORE", "1.5"))
-HOTWORD_MAX_ACTIVE_PATHS = int(os.environ.get("VOICEIME_HOTWORD_MAX_ACTIVE_PATHS", "4"))
-OUTPUT_MODE = os.environ.get("VOICEIME_OUTPUT_MODE", "preedit").strip().lower()
 SAMPLE_RATE = 16000
 CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
 MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
 FINAL_PADDING_SEC = float(os.environ.get("VOICEIME_FINAL_PADDING_SEC", "1.0"))
-FINAL_MAX_WAIT_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_WAIT", "1.2"))
-FINAL_MAX_AUDIO_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_AUDIO_SEC", "10.0"))
 MIC_SCRIPT = ROOT / "voiceime-mic"
 LOCK = RUNTIME / "voiceime-engine.lock"
 STATE_FILE = RUNTIME / "voiceime-engine.state"
@@ -70,7 +53,6 @@ terminate = False
 start_request = 0
 stop_request = 0
 current_session = ""
-final_inflight = None
 
 
 def load_project_env() -> None:
@@ -180,54 +162,6 @@ class FcitxBridge:
         )
         return out.returncode == 0 and out.stdout.strip() == "b true"
 
-    def preview(self, session: str, text: str) -> bool:
-        if self._bus is not None and self._gio is not None:
-            _Gio, GLib = self._gio
-            return self._gio_call(
-                "PreviewSession", GLib.Variant("(ss)", (session, text)),
-            )
-        out = subprocess.run(
-            [
-                "busctl", "--user", "--timeout=1", "call",
-                "org.voiceime.Input", "/org/voiceime/Input",
-                "org.voiceime.Input1", "PreviewSession", "ss", session, text,
-            ],
-            capture_output=True, text=True, timeout=1.5,
-        )
-        return out.returncode == 0 and out.stdout.strip() == "b true"
-
-    def commit(self, session: str, text: str) -> bool:
-        if self._bus is not None and self._gio is not None:
-            _Gio, GLib = self._gio
-            return self._gio_call(
-                "CommitSession", GLib.Variant("(ss)", (session, text)),
-            )
-        out = subprocess.run(
-            [
-                "busctl", "--user", "--timeout=1", "call",
-                "org.voiceime.Input", "/org/voiceime/Input",
-                "org.voiceime.Input1", "CommitSession", "ss", session, text,
-            ],
-            capture_output=True, text=True, timeout=1.5,
-        )
-        return out.returncode == 0 and out.stdout.strip() == "b true"
-
-    def cancel(self, session: str) -> bool:
-        if self._bus is not None and self._gio is not None:
-            _Gio, GLib = self._gio
-            return self._gio_call(
-                "CancelSession", GLib.Variant("(s)", (session,)),
-            )
-        out = subprocess.run(
-            [
-                "busctl", "--user", "--timeout=1", "call",
-                "org.voiceime.Input", "/org/voiceime/Input",
-                "org.voiceime.Input1", "CancelSession", "s", session,
-            ],
-            capture_output=True, text=True, timeout=1.5,
-        )
-        return out.returncode == 0 and out.stdout.strip() == "b true"
-
 
 class TextReconciler:
     def __init__(self, bridge: FcitxBridge, session: str) -> None:
@@ -282,72 +216,33 @@ class TextReconciler:
         return True
 
 
-class PreeditPresenter:
-    """Throttle live ASR previews without writing them into the document."""
-
-    def __init__(self, bridge: FcitxBridge, session: str) -> None:
-        self.bridge = bridge
-        self.session = session
-        self.current = ""
-        self.last_emit = 0.0
-
-    def emit(self, text: str, *, force: bool = False) -> bool:
-        text = text.strip()
-        if text == self.current:
-            return True
-        now = time.monotonic()
-        if not force and now - self.last_emit < PARTIAL_MIN_INTERVAL:
-            return True
-        if not self.bridge.preview(self.session, text):
-            return False
-        self.current = text
-        self.last_emit = now
-        return True
-
-
 class FinalRecognizer:
-    """Fast high-accuracy final pass using offline Paraformer large.
-
-    Real-speech A/B on the user's 30 recordings:
-      streaming Paraformer:        12.23% content CER
-      offline Paraformer large:     9.61% content CER
-      Qwen3 + priority hotwords:    8.25% content CER, but RTF 1.131
-
-    The offline Paraformer is therefore the production default: it gives most
-    of the quality gain without making the user wait roughly the full utterance
-    duration again. If its model is missing, VoiceIME safely uses the streaming
-    final text.
-    """
+    """Optional high-accuracy second pass using FireRedASR2 CTC."""
 
     def __init__(self) -> None:
         self.recognizer = None
-        self.enabled = os.environ.get("VOICEIME_FINAL_ENABLED", "1").lower() in {
+        if os.environ.get("VOICEIME_FINAL_ENABLED", "0").lower() not in {
             "1", "true", "yes", "on"
-        }
-        if not self.enabled:
-            log("final ASR disabled")
+        }:
+            log("final ASR disabled; set VOICEIME_FINAL_ENABLED=1 to test it")
             return
-
         model_dir = Path(os.environ.get(
             "VOICEIME_FINAL_MODEL",
-            ROOT / "models" / "sherpa-onnx-paraformer-zh-2024-03-09",
+            ROOT / "models" / "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",
         ))
         model = model_dir / "model.int8.onnx"
         tokens = model_dir / "tokens.txt"
         if not model.exists() or not tokens.exists():
-            log(
-                "offline Paraformer final model not installed; "
-                "streaming result will be used"
-            )
+            log("final ASR model not installed; streaming result will be used")
             return
         try:
             import sherpa_onnx
-            self.recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-                paraformer=str(model),
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_fire_red_asr_ctc(
+                model=str(model),
                 tokens=str(tokens),
                 num_threads=max(1, min(4, (os.cpu_count() or 2) // 2)),
             )
-            log(f"loaded offline Paraformer final model from {model_dir}")
+            log(f"loaded final FireRedASR2 model from {model_dir}")
         except Exception as ex:
             log(f"failed to load final ASR model: {ex!r}")
             self.recognizer = None
@@ -363,61 +258,6 @@ class FinalRecognizer:
         self.recognizer.decode_stream(stream)
         result = stream.result
         return (result.text if hasattr(result, "text") else str(result)).strip()
-
-
-class PunctuationRestorer:
-    """Fast local punctuation restoration with a semantic fail-closed guard."""
-
-    def __init__(self) -> None:
-        self.restorer = None
-        self.enabled = os.environ.get(
-            "VOICEIME_PUNCTUATION_ENABLED", "1"
-        ).lower() in {"1", "true", "yes", "on"}
-        if not self.enabled:
-            return
-        model_dir = Path(os.environ.get(
-            "VOICEIME_PUNCTUATION_MODEL",
-            ROOT / "models"
-            / "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8",
-        ))
-        model = model_dir / "model.int8.onnx"
-        if not model.exists():
-            log("punctuation model not installed; punctuation restoration disabled")
-            return
-        try:
-            import sherpa_onnx
-            config = sherpa_onnx.OfflinePunctuationConfig(
-                model=sherpa_onnx.OfflinePunctuationModelConfig(
-                    ct_transformer=str(model),
-                    num_threads=1,
-                    provider="cpu",
-                )
-            )
-            self.restorer = sherpa_onnx.OfflinePunctuation(config)
-            log(f"loaded punctuation model from {model_dir}")
-        except Exception as ex:
-            log(f"failed to load punctuation model: {ex!r}")
-            self.restorer = None
-
-    def correct(self, text: str) -> str:
-        if not text or self.restorer is None:
-            return text
-        try:
-            candidate = self.restorer.add_punctuation(text).strip()
-        except Exception as ex:
-            log(f"punctuation restoration failed: {ex!r}")
-            return text
-        if not candidate:
-            return text
-        # The punctuation model occasionally changes lexical content. Accept
-        # it only when the exact same conservative semantic guard used by the
-        # LLM path says the text content is unchanged.
-        if LLMCorrector._semantic_signature(text) != LLMCorrector._semantic_signature(
-            candidate
-        ):
-            log("punctuation candidate rejected by semantic guard")
-            return text
-        return candidate
 
 
 class LLMCorrector:
@@ -618,123 +458,25 @@ class LLMCorrector:
 
 
 class SherpaRecognizer:
-    """Streaming recognizer with safe hotword-capable auto selection.
-
-    backend=paraformer (default):
-      keep the real-speech winner as the production streaming path.
-
-    backend=auto:
-      experimental: try bilingual Zipformer + hotwords, then fall back to
-      Paraformer. Real-speech benchmarks currently favor Paraformer.
-
-    backend=hotwords/zipformer:
-      require the hotword path and fail fast if it is incomplete.
-
-    backend=paraformer:
-      force the previous production recognizer.
-    """
-
     def __init__(self) -> None:
         try:
             import sherpa_onnx
         except ImportError:
             raise SystemExit("sherpa-onnx missing; run scripts/09-setup-sherpa.sh")
 
-        self.backend = ""
+        tokens = MODEL_DIR / "tokens.txt"
+        encoder = next((p for p in (
+            MODEL_DIR / "encoder.int8.onnx", MODEL_DIR / "encoder.onnx"
+        ) if p.exists()), None)
+        decoder = next((p for p in (
+            MODEL_DIR / "decoder.int8.onnx", MODEL_DIR / "decoder.onnx"
+        ) if p.exists()), None)
+        if not tokens.exists() or encoder is None or decoder is None:
+            raise SystemExit(f"Sherpa model is incomplete: {MODEL_DIR}")
+
         threads = max(1, min(4, (os.cpu_count() or 2) // 2))
-
-        if ASR_BACKEND in ("auto", "hotwords", "zipformer", "zipformer-hotwords"):
-            try:
-                self.recognizer = self._create_hotword_recognizer(
-                    sherpa_onnx, threads
-                )
-                self.backend = "zipformer-hotwords"
-                log(
-                    "loaded bilingual Zipformer hotword ASR "
-                    f"score={HOTWORDS_SCORE:g} terms={self._hotword_count()}"
-                )
-                return
-            except Exception as ex:
-                if ASR_BACKEND != "auto":
-                    raise SystemExit(f"hotword ASR unavailable: {ex}") from ex
-                log(f"hotword ASR unavailable; falling back to Paraformer: {ex!r}")
-
-        if ASR_BACKEND not in ("auto", "paraformer"):
-            raise SystemExit(
-                "VOICEIME_ASR_BACKEND must be auto, paraformer, hotwords, "
-                "zipformer, or zipformer-hotwords"
-            )
-
-        self.recognizer = self._create_paraformer(sherpa_onnx, threads)
-        self.backend = "paraformer"
-        log(f"loaded fallback Paraformer from {PARAFORMER_MODEL_DIR}")
-
-    @staticmethod
-    def _pick(directory: Path, *names: str) -> Path:
-        for name in names:
-            path = directory / name
-            if path.exists():
-                return path
-        raise FileNotFoundError(
-            f"none of {', '.join(names)} found in {directory}"
-        )
-
-    def _hotword_count(self) -> int:
-        try:
-            return sum(
-                1 for raw in HOTWORDS_FILE.read_text(encoding="utf-8").splitlines()
-                if raw.strip() and not raw.lstrip().startswith("#")
-            )
-        except OSError:
-            return 0
-
-    def _create_hotword_recognizer(self, sherpa_onnx, threads: int):
-        model = HOTWORD_MODEL_DIR
-        tokens = self._pick(model, "tokens.txt")
-        encoder = self._pick(
-            model,
-            "encoder-epoch-99-avg-1.int8.onnx",
-            "encoder-epoch-99-avg-1.onnx",
-        )
-        decoder = self._pick(
-            model,
-            "decoder-epoch-99-avg-1.onnx",
-            "decoder-epoch-99-avg-1.int8.onnx",
-        )
-        joiner = self._pick(
-            model,
-            "joiner-epoch-99-avg-1.int8.onnx",
-            "joiner-epoch-99-avg-1.onnx",
-        )
-        bpe_vocab = self._pick(model, "bpe.vocab")
-        if not HOTWORDS_FILE.is_file() or HOTWORDS_FILE.stat().st_size == 0:
-            raise FileNotFoundError(
-                f"compiled hotwords missing: {HOTWORDS_FILE}; "
-                "run scripts/21-setup-hotword-asr.sh"
-            )
-        return sherpa_onnx.OnlineRecognizer.from_transducer(
-            tokens=str(tokens),
-            encoder=str(encoder),
-            decoder=str(decoder),
-            joiner=str(joiner),
-            num_threads=threads,
-            sample_rate=SAMPLE_RATE,
-            feature_dim=80,
-            decoding_method="modified_beam_search",
-            max_active_paths=max(1, HOTWORD_MAX_ACTIVE_PATHS),
-            hotwords_file=str(HOTWORDS_FILE),
-            hotwords_score=HOTWORDS_SCORE,
-            modeling_unit="bpe",
-            bpe_vocab=str(bpe_vocab),
-            enable_endpoint_detection=False,
-        )
-
-    def _create_paraformer(self, sherpa_onnx, threads: int):
-        model = PARAFORMER_MODEL_DIR
-        tokens = self._pick(model, "tokens.txt")
-        encoder = self._pick(model, "encoder.int8.onnx", "encoder.onnx")
-        decoder = self._pick(model, "decoder.int8.onnx", "decoder.onnx")
-        return sherpa_onnx.OnlineRecognizer.from_paraformer(
+        log(f"loading sherpa model from {MODEL_DIR} with {threads} threads")
+        self.recognizer = sherpa_onnx.OnlineRecognizer.from_paraformer(
             tokens=str(tokens),
             encoder=str(encoder),
             decoder=str(decoder),
@@ -744,6 +486,7 @@ class SherpaRecognizer:
             decoding_method="greedy_search",
             enable_endpoint_detection=False,
         )
+        log("sherpa model loaded")
 
     def create_stream(self):
         return self.recognizer.create_stream()
@@ -765,8 +508,10 @@ class SherpaRecognizer:
         return value.text if hasattr(value, "text") else str(value)
 
     def finalize(self, stream) -> str:
-        # Both streaming backends need tail context to flush final tokens.
-        # Synthetic silence adds inference work, not a matching wall-clock wait.
+        # Paraformer needs trailing silence to emit its final tokens.  The old
+        # 200 ms padding truncated sentence endings in the user's real speech
+        # samples.  This is synthetic audio, so increasing it adds inference
+        # work but does not add one second of wall-clock waiting.
         stream.accept_waveform(
             SAMPLE_RATE,
             np.zeros(int(max(0.0, FINAL_PADDING_SEC) * SAMPLE_RATE), dtype=np.float32),
@@ -935,109 +680,10 @@ def refine_async(
             set_correction_state(session, "failed")
 
 
-def _best_final_text(
-    session: str,
-    request_id: int,
-    streaming_text: str,
-    pcm: bytes,
-    final_asr: FinalRecognizer,
-    glossary: GlossaryCorrector,
-    numbers: ContextNumberNormalizer,
-    punctuation: PunctuationRestorer,
-    executor: ThreadPoolExecutor,
-) -> str:
-    """Return a bounded-latency deterministic final candidate.
-
-    Never queue offline recognitions behind a previous slow one: a timed-out
-    native inference cannot be force-cancelled safely, so at most one may be
-    in flight. Long utterances skip the offline pass entirely rather than
-    leaving a many-second CPU-heavy job competing with the next recording.
-    """
-    global current_session, start_request, final_inflight
-    candidate = streaming_text
-    audio_sec = len(pcm) / float(SAMPLE_RATE * 2) if pcm else 0.0
-
-    can_run_final = (
-        final_asr.recognizer is not None
-        and pcm
-        and start_request <= request_id
-        and audio_sec <= max(0.0, FINAL_MAX_AUDIO_SEC)
-    )
-
-    if final_inflight is not None and final_inflight.done():
-        # Consume any exception from a previous fallback task before replacing
-        # the Future. Its text is stale and must never be applied.
-        try:
-            final_inflight.result()
-        except Exception as ex:
-            log(f"previous final ASR finished with error: {ex!r}")
-        final_inflight = None
-
-    if can_run_final and final_inflight is not None:
-        log("final ASR still busy from previous utterance; using streaming result")
-        can_run_final = False
-
-    if can_run_final:
-        set_state("finalizing")
-        future = executor.submit(final_asr.transcribe, pcm)
-        final_inflight = future
-        deadline = time.monotonic() + max(0.0, FINAL_MAX_WAIT_SEC)
-        while not future.done() and time.monotonic() < deadline:
-            if session != current_session or start_request > request_id:
-                log("new utterance queued; stop waiting for final ASR")
-                break
-            time.sleep(0.01)
-        if future.done():
-            final_inflight = None
-            try:
-                refined = future.result()
-                if refined:
-                    candidate = refined
-            except Exception as ex:
-                log(f"final ASR failed; keeping streaming result: {ex!r}")
-        else:
-            # Future.cancel() only succeeds if native inference has not begun.
-            # Either way we do not queue another job behind it.
-            future.cancel()
-            log(
-                f"final ASR exceeded {FINAL_MAX_WAIT_SEC:.2f}s or was superseded; "
-                "keeping streaming result"
-            )
-    elif audio_sec > FINAL_MAX_AUDIO_SEC:
-        log(
-            f"utterance {audio_sec:.2f}s exceeds final-pass limit "
-            f"{FINAL_MAX_AUDIO_SEC:.2f}s; using streaming result"
-        )
-
-    corrected = glossary.correct(candidate)
-    if corrected != candidate:
-        log(
-            "glossary corrected final text: "
-            f"{candidate[:80]!r} -> {corrected[:80]!r}"
-        )
-    candidate = corrected
-
-    normalized = numbers.correct(candidate)
-    if normalized != candidate:
-        log(
-            "context number normalization applied: "
-            f"{candidate[:80]!r} -> {normalized[:80]!r}"
-        )
-    candidate = normalized
-
-    punctuated = punctuation.correct(candidate)
-    if punctuated != candidate:
-        log("safe punctuation restoration applied")
-    return punctuated or streaming_text
-
-
 def run_utterance(
     asr: SherpaRecognizer,
     final_asr: FinalRecognizer,
     llm: LLMCorrector,
-    glossary: GlossaryCorrector,
-    numbers: ContextNumberNormalizer,
-    punctuation: PunctuationRestorer,
     bridge: FcitxBridge,
     executor: ThreadPoolExecutor,
     request_id: int,
@@ -1051,12 +697,7 @@ def run_utterance(
         log("no focused Fcitx input context or native bridge is outdated")
         return
 
-    use_preedit = OUTPUT_MODE == "preedit"
-    presenter = (
-        PreeditPresenter(bridge, session)
-        if use_preedit
-        else TextReconciler(bridge, session)
-    )
+    reconciler = TextReconciler(bridge, session)
     stream = asr.create_stream()
     recorder = start_recorder(resolve_mic())
     assert recorder.stdout is not None
@@ -1068,8 +709,7 @@ def run_utterance(
     started = time.monotonic()
     all_audio = bytearray()
     set_state("recording")
-    log(f"recording session={session[:8]} output={OUTPUT_MODE}")
-    target_valid = True
+    log(f"recording session={session[:8]}")
     try:
         while stop_request < request_id and not terminate:
             if time.monotonic() - started > MAX_UTTERANCE_SEC:
@@ -1086,9 +726,8 @@ def run_utterance(
                     asr.accept_pcm(stream, data)
                     asr.decode_ready(stream)
                     text = asr.text(stream)
-                    if text and not presenter.emit(text):
+                    if text and not reconciler.emit(text):
                         log("Fcitx session invalidated; ending utterance")
-                        target_valid = False
                         break
             if recorder.poll() is not None:
                 log("recorder exited unexpectedly")
@@ -1099,7 +738,9 @@ def run_utterance(
             all_audio.extend(tail)
             asr.accept_pcm(stream, tail)
 
-        base_text = presenter.current
+        # Commit the streaming final result synchronously. This is the
+        # guaranteed fallback even if FireRed or LLM refinement fails later.
+        base_text = reconciler.current
         try:
             streaming_final = asr.finalize(stream).strip()
             if streaming_final:
@@ -1107,44 +748,16 @@ def run_utterance(
         except Exception as ex:
             log(f"streaming finalize failed; keeping last partial: {ex!r}")
 
-        if base_text and base_text != presenter.current:
-            if not presenter.emit(base_text, force=True):
-                log("streaming final preview rejected because target changed")
-                target_valid = False
-                base_text = presenter.current
+        if base_text and base_text != reconciler.current:
+            if not reconciler.emit(base_text, force=True):
+                log("streaming final rejected because target changed")
+                base_text = reconciler.current
 
-        if use_preedit:
-            if target_valid and base_text:
-                final_text = _best_final_text(
-                    session,
-                    request_id,
-                    base_text,
-                    bytes(all_audio),
-                    final_asr,
-                    glossary,
-                    numbers,
-                    punctuation,
-                    executor,
-                )
-                # Show the selected final candidate before the atomic commit.
-                if final_text != presenter.current:
-                    presenter.emit(final_text, force=True)
-                if not bridge.commit(session, final_text):
-                    log("one-shot final commit rejected because target changed")
-                    bridge.cancel(session)
-                else:
-                    log(
-                        f"one-shot final committed chars={len(final_text)} "
-                        f"(streaming={len(base_text)})"
-                    )
-            else:
-                bridge.cancel(session)
-            set_state("suspended")
-            return
-
-        # Legacy compatibility mode: keep the old commit-as-you-stream path.
         set_state("suspended")
+
         if base_text and all_audio:
+            # Do not block PTT on FireRed/LLM. One worker serializes the heavy
+            # second pass; stale queued jobs self-cancel via current_session.
             executor.submit(
                 refine_async,
                 session,
@@ -1174,9 +787,6 @@ def main() -> int:
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
     llm = LLMCorrector()
-    glossary = GlossaryCorrector()
-    numbers = ContextNumberNormalizer()
-    punctuation = PunctuationRestorer()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceime-final")
 
     READY_FILE.write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -1193,8 +803,7 @@ def main() -> int:
             handled_request += 1
             try:
                 run_utterance(
-                    asr, final_asr, llm, glossary, numbers, punctuation,
-                    bridge, executor, handled_request
+                    asr, final_asr, llm, bridge, executor, handled_request
                 )
             except Exception as ex:
                 set_state("suspended")
