@@ -54,7 +54,8 @@ CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
 MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
 FINAL_PADDING_SEC = float(os.environ.get("VOICEIME_FINAL_PADDING_SEC", "1.0"))
-FINAL_MAX_WAIT_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_WAIT", "0.8"))
+FINAL_MAX_WAIT_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_WAIT", "1.2"))
+FINAL_MAX_AUDIO_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_AUDIO_SEC", "10.0"))
 MIC_SCRIPT = ROOT / "voiceime-mic"
 LOCK = RUNTIME / "voiceime-engine.lock"
 STATE_FILE = RUNTIME / "voiceime-engine.state"
@@ -68,6 +69,7 @@ terminate = False
 start_request = 0
 stop_request = 0
 current_session = ""
+final_inflight = None
 
 
 def load_project_env() -> None:
@@ -942,27 +944,49 @@ def _best_final_text(
     punctuation: PunctuationRestorer,
     executor: ThreadPoolExecutor,
 ) -> str:
-    """Return a fast, deterministic final candidate.
+    """Return a bounded-latency deterministic final candidate.
 
-    The offline Paraformer runs in the existing single final worker. If the
-    user presses PTT for the next utterance, or inference exceeds the bounded
-    wait, we immediately fall back to the streaming text instead of delaying
-    the next recording. The glossary and punctuation passes are local,
-    deterministic, and fail closed.
+    Never queue offline recognitions behind a previous slow one: a timed-out
+    native inference cannot be force-cancelled safely, so at most one may be
+    in flight. Long utterances skip the offline pass entirely rather than
+    leaving a many-second CPU-heavy job competing with the next recording.
     """
-    global current_session, start_request
+    global current_session, start_request, final_inflight
     candidate = streaming_text
+    audio_sec = len(pcm) / float(SAMPLE_RATE * 2) if pcm else 0.0
 
-    if final_asr.recognizer is not None and pcm and start_request <= request_id:
+    can_run_final = (
+        final_asr.recognizer is not None
+        and pcm
+        and start_request <= request_id
+        and audio_sec <= max(0.0, FINAL_MAX_AUDIO_SEC)
+    )
+
+    if final_inflight is not None and final_inflight.done():
+        # Consume any exception from a previous fallback task before replacing
+        # the Future. Its text is stale and must never be applied.
+        try:
+            final_inflight.result()
+        except Exception as ex:
+            log(f"previous final ASR finished with error: {ex!r}")
+        final_inflight = None
+
+    if can_run_final and final_inflight is not None:
+        log("final ASR still busy from previous utterance; using streaming result")
+        can_run_final = False
+
+    if can_run_final:
         set_state("finalizing")
         future = executor.submit(final_asr.transcribe, pcm)
+        final_inflight = future
         deadline = time.monotonic() + max(0.0, FINAL_MAX_WAIT_SEC)
         while not future.done() and time.monotonic() < deadline:
             if session != current_session or start_request > request_id:
-                log("new utterance queued; skip waiting for final ASR")
+                log("new utterance queued; stop waiting for final ASR")
                 break
             time.sleep(0.01)
         if future.done():
+            final_inflight = None
             try:
                 refined = future.result()
                 if refined:
@@ -970,10 +994,18 @@ def _best_final_text(
             except Exception as ex:
                 log(f"final ASR failed; keeping streaming result: {ex!r}")
         else:
+            # Future.cancel() only succeeds if native inference has not begun.
+            # Either way we do not queue another job behind it.
+            future.cancel()
             log(
-                f"final ASR exceeded {FINAL_MAX_WAIT_SEC:.2f}s; "
+                f"final ASR exceeded {FINAL_MAX_WAIT_SEC:.2f}s or was superseded; "
                 "keeping streaming result"
             )
+    elif audio_sec > FINAL_MAX_AUDIO_SEC:
+        log(
+            f"utterance {audio_sec:.2f}s exceeds final-pass limit "
+            f"{FINAL_MAX_AUDIO_SEC:.2f}s; using streaming result"
+        )
 
     corrected = glossary.correct(candidate)
     if corrected != candidate:
