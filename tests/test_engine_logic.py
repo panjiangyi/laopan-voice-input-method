@@ -3,6 +3,7 @@ import runpy
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,10 +82,73 @@ class FinalPaddingTests(unittest.TestCase):
 
 
 class FinalRecognizerConfigTests(unittest.TestCase):
-    def test_second_pass_is_disabled_by_default(self):
-        with patch.dict("os.environ", {}, clear=True):
+    def test_second_pass_can_be_explicitly_disabled(self):
+        with patch.dict("os.environ", {"VOICEIME_FINAL_ENABLED": "0"}, clear=True):
             recognizer = ENGINE["FinalRecognizer"]()
         self.assertIsNone(recognizer.recognizer)
+        self.assertFalse(recognizer.enabled)
+
+
+class PreeditFinalTests(unittest.TestCase):
+    def test_queued_next_utterance_skips_final_wait(self):
+        calls = []
+
+        class Final:
+            recognizer = object()
+            def transcribe(self, _pcm):
+                calls.append("final")
+                return "不应该运行"
+
+        class Glossary:
+            def correct(self, text):
+                return text.replace("system d", "systemd")
+
+        class Punctuation:
+            def correct(self, text):
+                return text + "。"
+
+        fn = ENGINE["_best_final_text"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.dict(
+                fn.__globals__,
+                current_session="s1",
+                start_request=2,
+                FINAL_MAX_WAIT_SEC=0.8,
+            ):
+                result = fn(
+                    "s1", 1, "重启 system d", b"x" * 32000,
+                    Final(), Glossary(), Punctuation(), executor,
+                )
+        self.assertEqual(result, "重启 systemd。")
+        self.assertEqual(calls, [])
+
+    def test_fast_final_is_glossary_corrected_before_commit(self):
+        class Final:
+            recognizer = object()
+            def transcribe(self, _pcm):
+                return "看一下 poll request"
+
+        class Glossary:
+            def correct(self, text):
+                return text.replace("poll request", "pull request")
+
+        class Punctuation:
+            def correct(self, text):
+                return text + "。"
+
+        fn = ENGINE["_best_final_text"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.dict(
+                fn.__globals__,
+                current_session="s1",
+                start_request=1,
+                FINAL_MAX_WAIT_SEC=1.0,
+            ):
+                result = fn(
+                    "s1", 1, "看一下破 request", b"x" * 32000,
+                    Final(), Glossary(), Punctuation(), executor,
+                )
+        self.assertEqual(result, "看一下 pull request。")
 
 
 class SignalRequestTests(unittest.TestCase):
