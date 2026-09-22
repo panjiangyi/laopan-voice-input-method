@@ -62,12 +62,18 @@ export VOICEIME_LLM_MODE="$LLM_MODE"
 export VOICEIME_LLM_TIMEOUT="$LLM_TIMEOUT"
 export DEEPSEEK_MODEL
 
-# 0. Make sure the project scripts are executable (a fresh checkout often
+# 0. Install anything needed by the production pipeline. The setup script is
+#    intentionally idempotent: installed apt packages, Python modules, and
+#    complete model directories are detected and skipped.
+step "Ensure system, Python, and model dependencies"
+bash "$ROOT/scripts/09-setup-sherpa.sh"
+
+# 1. Make sure the project scripts are executable (a fresh checkout often
 #    loses +x, and 10-install-service.sh also resets these bits).
 step "Refresh executable bits"
 chmod +x "$ROOT"/voiceime-* "$ROOT"/native/*.sh "$ROOT"/scripts/*.sh
 
-# 1. Stop whatever is currently running.
+# 2. Stop whatever is currently running.
 step "Stop existing daemon / instances"
 if [ -x "$ROOT/voiceime-reset" ]; then
   "$ROOT/voiceime-reset" || true
@@ -80,7 +86,7 @@ pkill -u "$(id -u)" -x parec                    2>/dev/null || true
 pkill -u "$(id -u)" -f "$ROOT/voiceime-engine"  2>/dev/null || true
 pkill -u "$(id -u)" -f "$ROOT/voiceime-ptt"     2>/dev/null || true
 
-# 2. Rebuild the Fcitx5 native bridge.
+# 3. Rebuild the Fcitx5 native bridge.
 step "Rebuild Fcitx5 addon (native/ → build/libvoiceime.so)"
 command -v g++ >/dev/null || die "g++ not installed"
 command -v fcitx5 >/dev/null || die "fcitx5 not installed"
@@ -133,7 +139,7 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 
-# 3. Verify streaming + final quality models. Missing quality models are safe:
+# 4. Verify streaming + final quality models. Missing quality models are safe:
 #    VoiceIME falls back to streaming text, but the user should know they are
 #    not actually testing the new final pipeline.
 step "Verify production ASR models"
@@ -151,7 +157,7 @@ else
   printf '  ✓ streaming + offline final + punctuation models ready\n'
 fi
 
-# 3b. DeepSeek is legacy/optional in the preedit pipeline.
+# 4b. DeepSeek is legacy/optional in the preedit pipeline.
 step "Configure optional DeepSeek correction"
 systemctl --user disable --now voiceime-corrector.service 2>/dev/null || true
 if [ "$LLM_ENABLED" = 1 ]; then
@@ -163,18 +169,18 @@ else
   printf '  AI correction disabled\n'
 fi
 
-# 4. Refresh the systemd user unit (idempotent; picks up any new ExecStart
+# 5. Refresh the systemd user unit (idempotent; picks up any new ExecStart
 #    or Environment= changes from this checkout).
 step "Refresh systemd user unit"
 bash "$ROOT/scripts/10-install-service.sh"
 systemctl --user daemon-reload
 
-# 5. Start the daemon.
+# 6. Start the daemon.
 step "Start voiceime-ptt"
 systemctl --user enable --now voiceime-ptt.service
 systemctl --user enable --now voiceime-overlay.service
 
-# 6. Wait until the daemon is actually idle (suspended = loaded and ready
+# 7. Wait until the daemon is actually idle (suspended = loaded and ready
 #    for PTT) instead of declaring victory on "active" alone.
 printf 'Waiting for daemon to reach idle... '
 state=""

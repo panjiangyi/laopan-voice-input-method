@@ -7,7 +7,8 @@ download_asr() {
   local name="$1"
   local dir="$ROOT/models/$name"
   local url="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$name.tar.bz2"
-  if [ ! -d "$dir" ]; then
+  if [ ! -f "$dir/model.int8.onnx" ] || [ ! -f "$dir/tokens.txt" ]; then
+    echo "  $name is missing or incomplete; downloading it now."
     local tmp
     tmp="$(mktemp --suffix=.tar.bz2)"
     trap 'rm -f "$tmp"' RETURN
@@ -15,6 +16,8 @@ download_asr() {
     tar -xjf "$tmp" -C "$ROOT/models"
     rm -f "$tmp"
     trap - RETURN
+  else
+    echo "  $name is already installed; skipping download."
   fi
 }
 
@@ -28,13 +31,16 @@ test -f "$ROOT/models/$FINAL_NAME/model.int8.onnx"
 test -f "$ROOT/models/$FINAL_NAME/tokens.txt"
 
 echo "[2/2] Installing deterministic Chinese/English punctuation model..."
-if [ ! -d "$PUNCT_DIR" ]; then
+if [ ! -f "$PUNCT_DIR/model.int8.onnx" ]; then
+  echo "  $PUNCT_NAME is missing or incomplete; downloading it now."
   tmp="$(mktemp --suffix=.tar.bz2)"
   trap 'rm -f "$tmp"' EXIT
   curl -fL --retry 3 --retry-delay 2 -o "$tmp"     "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/$PUNCT_NAME.tar.bz2"
   tar -xjf "$tmp" -C "$ROOT/models"
   rm -f "$tmp"
   trap - EXIT
+else
+  echo "  $PUNCT_NAME is already installed; skipping download."
 fi
 test -f "$PUNCT_DIR/model.int8.onnx"
 
