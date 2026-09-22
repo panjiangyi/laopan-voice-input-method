@@ -51,10 +51,10 @@ class GlossaryCorrectorTests(unittest.TestCase):
         cases = {
             "Dabby Dental 的价格": "Darby Dental 的价格",
             "Henry Shine 上有货": "Henry Schein 上有货",
-            "stripe webhook": "Stripe webhook",
+            "stripe webhook": "Stripe Webhook",
             "linear ticket": "Linear ticket",
             "vercel deployment": "Vercel deployment",
-            "aws lambda": "AWS lambda",
+            "aws lambda": "AWS Lambda",
             "DC Dental": "DC Dental",
         }
         for source, expected in cases.items():
