@@ -38,6 +38,8 @@ COSMETIC = set("，。！？；：“”‘’（）《》〈〉")
 
 
 def is_cjk(ch: str) -> bool:
+    if not ch:
+        return False
     cp = ord(ch)
     return (
         0x3400 <= cp <= 0x4DBF
