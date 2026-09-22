@@ -1,7 +1,7 @@
 # VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
-> 当前推荐版本：Sherpa 双语流式识别。安装 hotword 模型后优先使用
-> Zipformer + modified beam search + 领域词库；模型缺失时自动退回原 Paraformer。
+> 当前推荐版本：Sherpa 双语 Paraformer 流式识别（真人样本当前最优）。
+> Zipformer hotword 路径保留为实验，但不会自动替换生产识别器。
 > FireRedASR2 二次识别默认关闭，DeepSeek 后处理可选，最终通过 Fcitx5 原生提交。
 > 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
 
@@ -32,8 +32,7 @@ bash native/build.sh
 bash native/install.sh
 fcitx5 -r
 
-# 2. 安装中英双语实时识别后端
-#    同时安装 Paraformer fallback + Zipformer hotword decoder
+# 2. 安装中英双语实时识别后端（生产默认 Paraformer）
 bash scripts/09-setup-sherpa.sh
 
 # 3. 可选：安装松键后的二次识别模型（默认关闭，先用真人录音 A/B）
@@ -91,10 +90,11 @@ journalctl --user -u voiceime-corrector -f
 - `hotwords/work-tools.txt`：Stripe、Linear、Vercel、AWS 及常用子产品。
 - `hotwords/dental.txt`：美国牙科供应商、品牌、产品和常用牙科术语。
 
-安装 `scripts/09-setup-sherpa.sh` 后，`auto` 模式优先使用 bilingual
-Zipformer + `modified_beam_search` + contextual hotword bias。若 hotword
-模型/词表不存在，引擎自动回退到原 Paraformer，不会因为个性化词库导致输入法
-无法启动。
+Zipformer contextual-bias 路径经过 30 条真人录音 A/B 后没有达到上线门槛：
+当前 Paraformer 的内容 CER / 中文 CER / 英文 token recall 分别为
+12.23% / 8.22% / 58.54%；Zipformer+hotwords 最好一组（score=1.5）为
+16.51% / 9.54% / 36.59%。因此生产流式识别继续固定使用 Paraformer。
+Zipformer 仅保留为实验路径，不能为了词库牺牲现有中英文整体准确率。
 
 个人词库放在：
 
