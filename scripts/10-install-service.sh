@@ -8,6 +8,8 @@ LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+ASR_BACKEND="${VOICEIME_ASR_BACKEND:-auto}"
+HOTWORDS_SCORE="${VOICEIME_HOTWORDS_SCORE:-1.5}"
 # Late-refinement rewrite is currently broken on this host (delete /
 # append leaves the streaming text in place and appends the LLM fix
 # after it). Default to disabled so the streaming ASR text already
@@ -31,6 +33,9 @@ Restart=on-failure
 RestartSec=1
 Environment=PYTHONUNBUFFERED=1
 Environment=VOICEIME_ENGINE=sherpa
+Environment=VOICEIME_ASR_BACKEND=$ASR_BACKEND
+Environment=VOICEIME_HOTWORDS_SCORE=$HOTWORDS_SCORE
+Environment=VOICEIME_HOTWORDS_FILE=$ROOT/hotwords/compiled.txt
 Environment=VOICEIME_FINAL_ENABLED=0
 Environment=VOICEIME_LLM_ENABLED=$LLM_ENABLED
 Environment=VOICEIME_LLM_DISABLED=$LLM_DISABLED
