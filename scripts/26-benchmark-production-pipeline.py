@@ -26,6 +26,7 @@ import sherpa_onnx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from voiceime_glossary import GlossaryCorrector  # noqa: E402
+from voiceime_numbers import ContextNumberNormalizer  # noqa: E402
 
 SAMPLE_RATE = 16000
 STREAMING = ROOT / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en"
@@ -37,6 +38,15 @@ PUNCT = (
 )
 TOKEN_RE = re.compile(
     r"[A-Za-z][A-Za-z0-9]*(?:[._+:/-][A-Za-z0-9+._:/-]+)*"
+)
+NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[+-]?\d+(?:\.\d+)*(?![A-Za-z0-9_])"
+)
+CODE_RE = re.compile(
+    r"(?:\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b)"
+    r"|(?:\b[A-Z][A-Z0-9_]{2,}\b)"
+    r"|(?:\b[A-Za-z][A-Za-z0-9]*(?:[.+:/-][A-Za-z0-9+._:/-]+)+\b)"
+    r"|(?:\bC\+\+\b)"
 )
 PUNCT_SET = set("，。！？；：、“”‘’（）《》〈〉,.!?;:()[]{}…—")
 COSMETIC = set("，。！？；：“”‘’（）《》〈〉")
@@ -170,6 +180,13 @@ def token_hits(ref: str, hyp: str) -> tuple[int, int]:
     return hits, sum(expected.values())
 
 
+def literal_hits(regex: re.Pattern[str], ref: str, hyp: str) -> tuple[int, int]:
+    expected = Counter(m.group(0).casefold() for m in regex.finditer(ref))
+    lowered = hyp.casefold()
+    hits = sum(min(count, lowered.count(token)) for token, count in expected.items())
+    return hits, sum(expected.values())
+
+
 def punct_pair(ref: str, hyp: str) -> tuple[int, int]:
     a = "".join(ch for ch in ref if ch in PUNCT_SET)
     b = "".join(ch for ch in hyp if ch in PUNCT_SET)
@@ -269,11 +286,15 @@ def add_metrics(counter: Counter, ref: str, hyp: str) -> None:
     ce, cn = content_pair(ref, hyp)
     ze, zn = cjk_pair(ref, hyp)
     eh, en = token_hits(ref, hyp)
+    nh, nn = literal_hits(NUMBER_RE, ref, hyp)
+    kh, kn = literal_hits(CODE_RE, ref, hyp)
     pe, pn = punct_pair(ref, hyp)
     counter.update(
         content_edits=ce, content_chars=cn,
         cjk_edits=ze, cjk_chars=zn,
         english_hits=eh, english_total=en,
+        number_hits=nh, number_total=nn,
+        code_hits=kh, code_total=kn,
         punct_edits=pe, punct_total=pn,
     )
 
@@ -293,6 +314,7 @@ def main() -> int:
     streaming_asr = make_streaming()
     final_asr = make_final()
     glossary = GlossaryCorrector()
+    numbers = ContextNumberNormalizer()
     punctuation = make_punctuation()
 
     stages = {
@@ -309,7 +331,8 @@ def main() -> int:
     for sid, ref, audio, duration in load_samples(args.manifest):
         streaming = decode_streaming(streaming_asr, audio)
         streaming_gloss = glossary.correct(streaming)
-        streaming_post, rejected = safe_punctuate(punctuation, streaming_gloss)
+        streaming_numbered = numbers.correct(streaming_gloss)
+        streaming_post, rejected = safe_punctuate(punctuation, streaming_numbered)
         punctuation_rejected += int(rejected)
 
         final_started = time.monotonic()
@@ -319,7 +342,8 @@ def main() -> int:
         total_audio += duration
 
         final_gloss = glossary.correct(raw_final)
-        final_post, rejected = safe_punctuate(punctuation, final_gloss)
+        final_numbered = numbers.correct(final_gloss)
+        final_post, rejected = safe_punctuate(punctuation, final_numbered)
         punctuation_rejected += int(rejected)
 
         if duration > args.max_audio:
@@ -369,6 +393,8 @@ def main() -> int:
             "content_cer": rate(c, "content_edits", "content_chars"),
             "cjk_cer": rate(c, "cjk_edits", "cjk_chars"),
             "english_recall": rate(c, "english_hits", "english_total"),
+            "number_recall": rate(c, "number_hits", "number_total"),
+            "code_recall": rate(c, "code_hits", "code_total"),
             "punct_error": rate(c, "punct_edits", "punct_total"),
         })
 
@@ -376,7 +402,10 @@ def main() -> int:
     with (args.output_dir / "summary.tsv").open(
         "w", encoding="utf-8", newline=""
     ) as fh:
-        fields = ["stage", "content_cer", "cjk_cer", "english_recall", "punct_error"]
+        fields = [
+            "stage", "content_cer", "cjk_cer", "english_recall",
+            "number_recall", "code_recall", "punct_error",
+        ]
         w = csv.DictWriter(fh, fieldnames=fields, delimiter="\t")
         w.writeheader()
         w.writerows(summaries)
@@ -399,13 +428,14 @@ def main() -> int:
         f"Gate: final wait <= **{args.max_wait:.2f}s**, audio <= "
         f"**{args.max_audio:.2f}s**.",
         "",
-        "| Stage | Content CER | Chinese CER | English recall | Punctuation error |",
-        "|---|---:|---:|---:|---:|",
+        "| Stage | Content CER | Chinese CER | English recall | Number recall | Code recall | Punctuation error |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summaries:
         report.append(
             f"| {row['stage']} | {fmt(row['content_cer'])} | "
             f"{fmt(row['cjk_cer'])} | {fmt(row['english_recall'])} | "
+            f"{fmt(row['number_recall'])} | {fmt(row['code_recall'])} | "
             f"{fmt(row['punct_error'])} |"
         )
     report += [
