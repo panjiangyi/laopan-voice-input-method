@@ -5,14 +5,14 @@ MODEL_NAME="sherpa-onnx-streaming-paraformer-bilingual-zh-en"
 MODEL_DIR="$ROOT/models/$MODEL_NAME"
 URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$MODEL_NAME.tar.bz2"
 
-echo "[1/4] Installing runtime packages..."
+echo "[1/5] Installing runtime packages..."
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-numpy python3-gi pulseaudio-utils bzip2 curl xinput
 
-echo "[2/4] Installing sherpa-onnx..."
+echo "[2/5] Installing sherpa-onnx..."
 python3 -m pip install --user --break-system-packages -U sherpa-onnx || python3 -m pip install --user -U sherpa-onnx
 
-echo "[3/4] Downloading bilingual streaming model..."
+echo "[3/5] Downloading bilingual streaming model..."
 mkdir -p "$ROOT/models"
 if [ ! -d "$MODEL_DIR" ]; then
   tmp="$(mktemp --suffix=.tar.bz2)"
