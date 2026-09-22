@@ -54,6 +54,7 @@ CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
 MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
 FINAL_PADDING_SEC = float(os.environ.get("VOICEIME_FINAL_PADDING_SEC", "1.0"))
+FINAL_MAX_WAIT_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_WAIT", "0.8"))
 MIC_SCRIPT = ROOT / "voiceime-mic"
 LOCK = RUNTIME / "voiceime-engine.lock"
 STATE_FILE = RUNTIME / "voiceime-engine.state"
@@ -272,6 +273,29 @@ class TextReconciler:
             return True
         remove, append = self.patch(self.current, text)
         if not self.bridge.update(self.session, remove, append):
+            return False
+        self.current = text
+        self.last_emit = now
+        return True
+
+
+class PreeditPresenter:
+    """Throttle live ASR previews without writing them into the document."""
+
+    def __init__(self, bridge: FcitxBridge, session: str) -> None:
+        self.bridge = bridge
+        self.session = session
+        self.current = ""
+        self.last_emit = 0.0
+
+    def emit(self, text: str, *, force: bool = False) -> bool:
+        text = text.strip()
+        if text == self.current:
+            return True
+        now = time.monotonic()
+        if not force and now - self.last_emit < PARTIAL_MIN_INTERVAL:
+            return True
+        if not self.bridge.preview(self.session, text):
             return False
         self.current = text
         self.last_emit = now
@@ -908,10 +932,69 @@ def refine_async(
             set_correction_state(session, "failed")
 
 
+def _best_final_text(
+    session: str,
+    request_id: int,
+    streaming_text: str,
+    pcm: bytes,
+    final_asr: FinalRecognizer,
+    glossary: GlossaryCorrector,
+    punctuation: PunctuationRestorer,
+    executor: ThreadPoolExecutor,
+) -> str:
+    """Return a fast, deterministic final candidate.
+
+    The offline Paraformer runs in the existing single final worker. If the
+    user presses PTT for the next utterance, or inference exceeds the bounded
+    wait, we immediately fall back to the streaming text instead of delaying
+    the next recording. The glossary and punctuation passes are local,
+    deterministic, and fail closed.
+    """
+    global current_session, start_request
+    candidate = streaming_text
+
+    if final_asr.recognizer is not None and pcm and start_request <= request_id:
+        set_state("finalizing")
+        future = executor.submit(final_asr.transcribe, pcm)
+        deadline = time.monotonic() + max(0.0, FINAL_MAX_WAIT_SEC)
+        while not future.done() and time.monotonic() < deadline:
+            if session != current_session or start_request > request_id:
+                log("new utterance queued; skip waiting for final ASR")
+                break
+            time.sleep(0.01)
+        if future.done():
+            try:
+                refined = future.result()
+                if refined:
+                    candidate = refined
+            except Exception as ex:
+                log(f"final ASR failed; keeping streaming result: {ex!r}")
+        else:
+            log(
+                f"final ASR exceeded {FINAL_MAX_WAIT_SEC:.2f}s; "
+                "keeping streaming result"
+            )
+
+    corrected = glossary.correct(candidate)
+    if corrected != candidate:
+        log(
+            "glossary corrected final text: "
+            f"{candidate[:80]!r} -> {corrected[:80]!r}"
+        )
+    candidate = corrected
+
+    punctuated = punctuation.correct(candidate)
+    if punctuated != candidate:
+        log("safe punctuation restoration applied")
+    return punctuated or streaming_text
+
+
 def run_utterance(
     asr: SherpaRecognizer,
     final_asr: FinalRecognizer,
     llm: LLMCorrector,
+    glossary: GlossaryCorrector,
+    punctuation: PunctuationRestorer,
     bridge: FcitxBridge,
     executor: ThreadPoolExecutor,
     request_id: int,
@@ -925,7 +1008,12 @@ def run_utterance(
         log("no focused Fcitx input context or native bridge is outdated")
         return
 
-    reconciler = TextReconciler(bridge, session)
+    use_preedit = OUTPUT_MODE == "preedit"
+    presenter = (
+        PreeditPresenter(bridge, session)
+        if use_preedit
+        else TextReconciler(bridge, session)
+    )
     stream = asr.create_stream()
     recorder = start_recorder(resolve_mic())
     assert recorder.stdout is not None
@@ -937,7 +1025,8 @@ def run_utterance(
     started = time.monotonic()
     all_audio = bytearray()
     set_state("recording")
-    log(f"recording session={session[:8]}")
+    log(f"recording session={session[:8]} output={OUTPUT_MODE}")
+    target_valid = True
     try:
         while stop_request < request_id and not terminate:
             if time.monotonic() - started > MAX_UTTERANCE_SEC:
@@ -954,8 +1043,9 @@ def run_utterance(
                     asr.accept_pcm(stream, data)
                     asr.decode_ready(stream)
                     text = asr.text(stream)
-                    if text and not reconciler.emit(text):
+                    if text and not presenter.emit(text):
                         log("Fcitx session invalidated; ending utterance")
+                        target_valid = False
                         break
             if recorder.poll() is not None:
                 log("recorder exited unexpectedly")
@@ -966,9 +1056,7 @@ def run_utterance(
             all_audio.extend(tail)
             asr.accept_pcm(stream, tail)
 
-        # Commit the streaming final result synchronously. This is the
-        # guaranteed fallback even if FireRed or LLM refinement fails later.
-        base_text = reconciler.current
+        base_text = presenter.current
         try:
             streaming_final = asr.finalize(stream).strip()
             if streaming_final:
@@ -976,16 +1064,43 @@ def run_utterance(
         except Exception as ex:
             log(f"streaming finalize failed; keeping last partial: {ex!r}")
 
-        if base_text and base_text != reconciler.current:
-            if not reconciler.emit(base_text, force=True):
-                log("streaming final rejected because target changed")
-                base_text = reconciler.current
+        if base_text and base_text != presenter.current:
+            if not presenter.emit(base_text, force=True):
+                log("streaming final preview rejected because target changed")
+                target_valid = False
+                base_text = presenter.current
 
+        if use_preedit:
+            if target_valid and base_text:
+                final_text = _best_final_text(
+                    session,
+                    request_id,
+                    base_text,
+                    bytes(all_audio),
+                    final_asr,
+                    glossary,
+                    punctuation,
+                    executor,
+                )
+                # Show the selected final candidate before the atomic commit.
+                if final_text != presenter.current:
+                    presenter.emit(final_text, force=True)
+                if not bridge.commit(session, final_text):
+                    log("one-shot final commit rejected because target changed")
+                    bridge.cancel(session)
+                else:
+                    log(
+                        f"one-shot final committed chars={len(final_text)} "
+                        f"(streaming={len(base_text)})"
+                    )
+            else:
+                bridge.cancel(session)
+            set_state("suspended")
+            return
+
+        # Legacy compatibility mode: keep the old commit-as-you-stream path.
         set_state("suspended")
-
         if base_text and all_audio:
-            # Do not block PTT on FireRed/LLM. One worker serializes the heavy
-            # second pass; stale queued jobs self-cancel via current_session.
             executor.submit(
                 refine_async,
                 session,
@@ -1015,6 +1130,8 @@ def main() -> int:
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
     llm = LLMCorrector()
+    glossary = GlossaryCorrector()
+    punctuation = PunctuationRestorer()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceime-final")
 
     READY_FILE.write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -1031,7 +1148,8 @@ def main() -> int:
             handled_request += 1
             try:
                 run_utterance(
-                    asr, final_asr, llm, bridge, executor, handled_request
+                    asr, final_asr, llm, glossary, punctuation,
+                    bridge, executor, handled_request
                 )
             except Exception as ex:
                 set_state("suspended")
