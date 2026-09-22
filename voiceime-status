@@ -8,6 +8,11 @@ llm_enabled="${VOICEIME_LLM_ENABLED:-0}"
 llm_mode="${VOICEIME_LLM_MODE:-punctuation}"
 llm_timeout="${VOICEIME_LLM_TIMEOUT:-15.0}"
 deepseek_model="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+output_mode="${VOICEIME_OUTPUT_MODE:-preedit}"
+final_enabled="${VOICEIME_FINAL_ENABLED:-1}"
+final_wait="${VOICEIME_FINAL_MAX_WAIT:-1.2}"
+final_audio="${VOICEIME_FINAL_MAX_AUDIO_SEC:-10.0}"
+punctuation_enabled="${VOICEIME_PUNCTUATION_ENABLED:-1}"
 for setting in $service_env; do
   case "$setting" in
     VOICEIME_ENGINE=*) engine="${setting#*=}" ;;
@@ -15,11 +20,17 @@ for setting in $service_env; do
     VOICEIME_LLM_MODE=*) llm_mode="${setting#*=}" ;;
     VOICEIME_LLM_TIMEOUT=*) llm_timeout="${setting#*=}" ;;
     DEEPSEEK_MODEL=*) deepseek_model="${setting#*=}" ;;
+    VOICEIME_OUTPUT_MODE=*) output_mode="${setting#*=}" ;;
+    VOICEIME_FINAL_ENABLED=*) final_enabled="${setting#*=}" ;;
+    VOICEIME_FINAL_MAX_WAIT=*) final_wait="${setting#*=}" ;;
+    VOICEIME_FINAL_MAX_AUDIO_SEC=*) final_audio="${setting#*=}" ;;
+    VOICEIME_PUNCTUATION_ENABLED=*) punctuation_enabled="${setting#*=}" ;;
   esac
 done
 echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
 echo "overlay:   $(systemctl --user is-active voiceime-overlay.service 2>/dev/null || echo unknown)"
-echo "engine:    $engine"
+echo "engine:    $engine output=$output_mode"
+echo "final:     enabled=$final_enabled max_wait=${final_wait}s max_audio=${final_audio}s punctuation=$punctuation_enabled"
 echo "llm:       enabled=$llm_enabled mode=$llm_mode timeout=${llm_timeout}s"
 echo "state:     $(voiceime_state)  (pid ${pid:--})"
 echo "instances: $(voiceime_pids | wc -l)"
