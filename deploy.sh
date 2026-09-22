@@ -133,13 +133,27 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 
-# 3. Sanity-check the Sherpa backend; warn (don't fail) if first-time setup
-#    is still needed. Without it the daemon will start but dictate nothing.
-step "Verify Sherpa streaming backend"
+# 3. Rebuild domain + personal hotwords before the daemon starts.
+step "Build mixed-language hotword glossary"
+python3 "$ROOT/scripts/20-build-glossary.py" -o "$ROOT/hotwords/compiled.txt"
+
+# 3a. Sanity-check both streaming backends. The engine's auto mode prefers
+#     Zipformer+hotwords and safely falls back to the proven Paraformer.
+step "Verify Sherpa streaming backends"
 SHERPA_MODEL="$ROOT/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en"
+HOTWORD_MODEL="$ROOT/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
 if [ ! -f "$SHERPA_MODEL/tokens.txt" ]; then
-  printf '\nWARNING: Sherpa bilingual model not found at %s\n' "$SHERPA_MODEL"
+  printf '\nWARNING: Paraformer fallback not found at %s\n' "$SHERPA_MODEL"
   printf 'First-time setup needed; run once:\n  bash scripts/09-setup-sherpa.sh\n\n'
+fi
+if [ -f "$HOTWORD_MODEL/tokens.txt" ] \
+   && [ -f "$HOTWORD_MODEL/bpe.vocab" ] \
+   && [ -s "$ROOT/hotwords/compiled.txt" ]; then
+  printf '  ✓ bilingual Zipformer hotword backend ready\n'
+else
+  printf '\nWARNING: hotword backend is not fully installed.\n'
+  printf 'VoiceIME will fall back to Paraformer. To enable mixed-language hotwords:\n'
+  printf '  bash scripts/21-setup-hotword-asr.sh\n\n'
 fi
 
 # 3b. DeepSeek is called directly by voiceime-engine; retire the old wrapper.
