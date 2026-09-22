@@ -25,5 +25,10 @@ test -f "$MODEL_DIR/tokens.txt"
 test -f "$MODEL_DIR/encoder.int8.onnx" -o -f "$MODEL_DIR/encoder.onnx"
 test -f "$MODEL_DIR/decoder.int8.onnx" -o -f "$MODEL_DIR/decoder.onnx"
 
-echo "[4/4] Done."
+echo "[4/5] Streaming model ready."
+
+echo "[5/5] Installing final/punctuation quality models..."
+bash "$ROOT/scripts/11-setup-quality.sh"
+
+echo "Done."
 echo "Next: bash scripts/10-install-service.sh"
