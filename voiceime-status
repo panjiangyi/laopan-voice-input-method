@@ -11,7 +11,8 @@ deepseek_model="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 asr_backend="${VOICEIME_ASR_BACKEND:-paraformer}"
 output_mode="${VOICEIME_OUTPUT_MODE:-preedit}"
 final_enabled="${VOICEIME_FINAL_ENABLED:-1}"
-final_wait="${VOICEIME_FINAL_MAX_WAIT:-0.8}"
+final_wait="${VOICEIME_FINAL_MAX_WAIT:-1.2}"
+final_audio="${VOICEIME_FINAL_MAX_AUDIO_SEC:-10.0}"
 punctuation_enabled="${VOICEIME_PUNCTUATION_ENABLED:-1}"
 hotwords_score="${VOICEIME_HOTWORDS_SCORE:-1.5}"
 hotwords_file="${VOICEIME_HOTWORDS_FILE:-$ROOT/hotwords/compiled.txt}"
@@ -26,6 +27,7 @@ for setting in $service_env; do
     VOICEIME_OUTPUT_MODE=*) output_mode="${setting#*=}" ;;
     VOICEIME_FINAL_ENABLED=*) final_enabled="${setting#*=}" ;;
     VOICEIME_FINAL_MAX_WAIT=*) final_wait="${setting#*=}" ;;
+    VOICEIME_FINAL_MAX_AUDIO_SEC=*) final_audio="${setting#*=}" ;;
     VOICEIME_PUNCTUATION_ENABLED=*) punctuation_enabled="${setting#*=}" ;;
     VOICEIME_HOTWORDS_SCORE=*) hotwords_score="${setting#*=}" ;;
     VOICEIME_HOTWORDS_FILE=*) hotwords_file="${setting#*=}" ;;
@@ -35,7 +37,7 @@ echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknow
 echo "overlay:   $(systemctl --user is-active voiceime-overlay.service 2>/dev/null || echo unknown)"
 echo "engine:    $engine"
 echo "asr:       streaming=$asr_backend output=$output_mode"
-echo "final:     enabled=$final_enabled max_wait=${final_wait}s punctuation=$punctuation_enabled"
+echo "final:     enabled=$final_enabled max_wait=${final_wait}s max_audio=${final_audio}s punctuation=$punctuation_enabled"
 echo "llm:       enabled=$llm_enabled mode=$llm_mode timeout=${llm_timeout}s"
 priority_file="$ROOT/hotwords/priority.txt"
 personal_file="${XDG_CONFIG_HOME:-$HOME/.config}/voiceime/hotwords.txt"
