@@ -21,14 +21,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache modern ASR models
-        uses: actions/cache@v4
+      - name: Restore modern ASR model cache
+        id: model-cache
+        uses: actions/cache/restore@v4
         with:
           path: models
           key: voiceime-modern-final-v1
 
       - name: Install modern final ASR candidates
         run: bash scripts/24-setup-modern-final-asr.sh
+
+      - name: Save modern ASR model cache
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: models
+          key: voiceime-modern-final-v1
 
       - name: Run real-speech modern final A/B
         run: |
