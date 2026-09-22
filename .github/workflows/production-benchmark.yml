@@ -1,0 +1,47 @@
+name: Production ASR pipeline benchmark
+
+on:
+  pull_request:
+    paths:
+      - "voiceime_glossary.py"
+      - "hotwords/priority.txt"
+      - "scripts/11-setup-quality.sh"
+      - "scripts/26-benchmark-production-pipeline.py"
+      - ".github/workflows/production-benchmark.yml"
+      - "samples/**"
+  workflow_dispatch:
+
+concurrency:
+  group: production-benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache production quality models
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/sherpa-onnx-paraformer-zh-2024-03-09
+            models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8
+          key: voiceime-production-quality-v1
+      - name: Install runtime
+        run: |
+          python3 -m pip install --user --break-system-packages -U sherpa-onnx numpy
+      - name: Install production final models
+        run: bash scripts/11-setup-quality.sh
+      - name: Benchmark exact production text pipeline
+        run: |
+          manifest="$(find samples -maxdepth 2 -name manifest.tsv -print | sort | tail -1)"
+          test -n "$manifest"
+          python3 scripts/26-benchmark-production-pipeline.py "$manifest" --output-dir benchmark-results-production
+          cat benchmark-results-production/report.md
+      - name: Upload production benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-asr-pipeline-benchmark
+          path: benchmark-results-production/
+          retention-days: 30
