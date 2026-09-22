@@ -1,0 +1,100 @@
+# US dental distribution, brands, products, and common dental terminology.
+
+Henry Schein
+Darby Dental
+DC Dental
+Patterson Dental
+Benco Dental
+Net32
+Safco Dental
+Dental City
+Pearson Dental
+Atlanta Dental
+Burkhart Dental
+US Dental Depot
+Zahn Dental
+Nowak Dental
+
+3M
+Dentsply Sirona
+Kerr
+GC America
+Septodont
+Ivoclar
+Kulzer
+VOCO
+HuFriedy
+Hu-Friedy
+CaviWipes
+Septocaine
+Lidocaine
+Articaine
+
+dental
+dentist
+dentistry
+dental supply
+dental supplies
+dental distributor
+dental ecommerce
+dental e-commerce
+dental equipment
+dental product
+dental products
+dental office
+dental practice
+dental lab
+dental laboratory
+
+composite
+bonding
+adhesive
+cement
+resin
+impression material
+impression tray
+alginate
+handpiece
+high speed handpiece
+low speed handpiece
+bur
+dental bur
+implant
+dental implant
+abutment
+endodontics
+endodontic
+orthodontics
+orthodontic
+periodontics
+prosthodontics
+CAD/CAM
+zirconia
+crown
+bridge
+denture
+anesthetic
+local anesthetic
+infection control
+sterilization
+autoclave
+suction
+evacuation
+prophy
+prophy paste
+fluoride
+etch
+etchant
+liner
+base
+matrix band
+wedge
+rubber dam
+root canal
+gutta-percha
+composite syringe
+curing light
+intraoral scanner
+dental scanner
+dental unit
+dental chair
