@@ -84,8 +84,15 @@ while time.monotonic() < deadline:
 
 commits = [args[0] for member, args in events if member == "CommitString"]
 deletes = [args for member, args in events if member == "DeleteSurroundingText"]
+backspaces = [
+    args for member, args in events
+    if member == "ForwardKey" and args[0] == 0xFF08
+]
 assert commits == ["你好这是测式", "试"], events
-assert len(deletes) == 1, events
+# Current native bridge uses ForwardKey(BackSpace) for destructive updates;
+# retain DeleteSurroundingText support so the integration test accepts either
+# safe frontend implementation.
+assert len(deletes) + len(backspaces) == 1, events
 
 # Replay the exact signals an application receives and assert the final
 # input-buffer content, not just the recognizer/bridge return values.
@@ -102,6 +109,10 @@ for member, args in events:
         assert 0 <= start <= cursor <= len(buffer), (buffer, cursor, args)
         buffer = buffer[:start] + buffer[start + size:]
         cursor = start
+    elif member == "ForwardKey" and args[0] == 0xFF08:
+        assert cursor > 0, (buffer, cursor, args)
+        buffer = buffer[:cursor - 1] + buffer[cursor:]
+        cursor -= 1
 assert buffer == "已有文字你好这是测试", (buffer, events)
 
 call(name, path, interface, "FocusOut")
