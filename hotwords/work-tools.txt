@@ -1,0 +1,57 @@
+# Tools and cloud services used frequently in day-to-day work.
+
+Stripe
+Stripe Checkout
+Stripe Billing
+Stripe Connect
+Stripe Customer
+Stripe Subscription
+Stripe Webhook
+Stripe Payment Intent
+Stripe PaymentIntent
+Stripe Price
+Stripe Product
+Stripe Invoice
+Stripe Sandbox
+Stripe Dashboard
+Stripe API
+Stripe CLI
+
+Linear
+Linear issue
+Linear ticket
+Linear project
+Linear cycle
+Linear sprint
+Linear backlog
+Linear workspace
+
+Vercel
+Vercel project
+Vercel deployment
+Vercel preview
+Vercel production
+Vercel function
+Vercel environment variable
+Vercel CLI
+
+AWS
+Amazon Web Services
+EC2
+S3
+Lambda
+RDS
+CloudFront
+CloudWatch
+ECS
+EKS
+SQS
+SNS
+IAM
+VPC
+Route 53
+API Gateway
+ALB
+ELB
+AWS CLI
+CloudFormation
