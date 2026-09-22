@@ -67,6 +67,27 @@ journalctl --user -u voiceime-corrector -f
 - `Ctrl+Alt+B`：结束当前听写。
 - `./voiceime-reset`：异常时强制清理引擎和录音进程。
 
+### 中英混输词库
+
+不更换现有 Paraformer，也不改中文识别链路。当前 streaming ASR 的每次 partial/final
+结果只在上屏前经过一次英文词库规范化；中文字符不会被词库改写。
+
+内置词库覆盖：
+- 前端、后端、DevOps、Git/GitHub、数据库、AI 常用词；
+- Stripe、Linear、Vercel、AWS；
+- Henry Schein、Darby Dental、DC Dental、Patterson Dental、Benco Dental 等牙科供应商/品牌。
+
+个人常用词可以直接添加：
+
+```bash
+./voiceime-hotwords add "MyProject" "Customer Brand" "New Dental Product"
+./voiceime-hotwords list
+./voiceime-hotwords remove "MyProject"
+```
+
+个人词保存在 `~/.config/voiceime/hotwords.txt`。修改后命令会重启 VoiceIME，
+新词立即参与英文规范化。
+
 ### 为什么不再默认使用 Vosk
 
 真实使用中暴露出的三个问题——长时间使用卡死、中英混输差、中文准确率低——都和旧主链路有关。新链路做了这些调整：
