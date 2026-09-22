@@ -81,6 +81,26 @@ journalctl --user -u voiceime-corrector -f
 
 当前目标是把日常中文与中英混合口述做到“可以替代大部分键盘输入”的 Alpha。是否达到“豆包输入法 80%”必须用同一批真人录音做 A/B 基准，不能只靠主观描述。后续以首字延迟、最终纠错延迟、中文 CER、中英 code-switch WER、连续 100 次 PTT 无卡死率作为验收指标。
 
+### 领域词库（为中英混输 hotword bias 准备）
+
+项目现在维护可复用的领域词库：
+
+- `hotwords/programming.txt`：前端、后端、Git/GitHub、数据库、DevOps、AI。
+- `hotwords/work-tools.txt`：Stripe、Linear、Vercel、AWS 及其常用子产品。
+- `hotwords/dental.txt`：美国牙科供应商、品牌、产品和常用牙科术语。
+
+可以生成一个去重后的规范词表：
+
+```bash
+python3 scripts/20-build-glossary.py -o /tmp/voiceime-glossary.txt
+```
+
+词库目前**不会直接改变生产 Paraformer 的解码结果**。当前实时链路仍使用
+`OnlineRecognizer.from_paraformer(..., decoding_method="greedy_search")`；
+sherpa-onnx 的 contextual hotword bias 需要 hotword-capable decoder（例如
+Transducer/Zipformer + `modified_beam_search`）。在真人录音 A/B 证明不会牺牲
+现有中文准确率之前，不默认切换识别器。
+
 ### 用真人录音评测
 
 `14-record-samples.sh` 产生的 manifest 可以直接交给当前识别链路。评测会同时报告内容、原始格式、英文词、数字和标点准确率，并把逐句结果写成 TSV：
