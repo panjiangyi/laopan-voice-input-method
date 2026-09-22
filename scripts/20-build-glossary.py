@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Build a deterministic merged VoiceIME domain glossary.
+"""Build VoiceIME's merged domain glossary.
 
-This does not change the current Paraformer decoder. The output is a canonical
-vocabulary source for benchmarks and for a future hotword-capable decoder.
+Built-in vocabularies are always included by default. If the user has
+~/.config/voiceime/hotwords.txt (or XDG_CONFIG_HOME equivalent), it is merged
+last so personal terms participate in the same ASR contextual-bias list.
 """
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,11 @@ DEFAULT_FILES = (
     "work-tools.txt",
     "dental.txt",
 )
+
+
+def personal_glossary_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "voiceime" / "hotwords.txt"
 
 
 def read_terms(path: Path) -> list[str]:
@@ -42,13 +49,21 @@ def merge_terms(paths: list[Path]) -> list[str]:
     return merged
 
 
+def default_paths(*, include_personal: bool = True) -> list[Path]:
+    paths = [DEFAULT_DIR / name for name in DEFAULT_FILES]
+    personal = personal_glossary_path()
+    if include_personal and personal.is_file():
+        paths.append(personal)
+    return paths
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "files",
         nargs="*",
         type=Path,
-        help="Glossary files. Defaults to the built-in domain vocabularies.",
+        help="Glossary files. Defaults to built-ins plus the personal glossary.",
     )
     parser.add_argument(
         "-o",
@@ -56,9 +71,14 @@ def main() -> int:
         type=Path,
         help="Optional output file. Without this flag, print to stdout.",
     )
+    parser.add_argument(
+        "--no-personal",
+        action="store_true",
+        help="Do not append ~/.config/voiceime/hotwords.txt to default inputs.",
+    )
     args = parser.parse_args()
 
-    paths = args.files or [DEFAULT_DIR / name for name in DEFAULT_FILES]
+    paths = args.files or default_paths(include_personal=not args.no_personal)
     missing = [path for path in paths if not path.is_file()]
     if missing:
         parser.error("missing glossary file(s): " + ", ".join(map(str, missing)))
