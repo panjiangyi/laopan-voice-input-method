@@ -1,0 +1,48 @@
+name: Mixed-language hotword benchmark
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "voiceime-engine"
+      - "hotwords/**"
+      - "scripts/09-setup-sherpa.sh"
+      - "scripts/20-build-glossary.py"
+      - "scripts/21-setup-hotword-asr.sh"
+      - "scripts/22-benchmark-hotwords.py"
+      - "samples/**"
+      - ".github/workflows/hotword-benchmark.yml"
+
+concurrency:
+  group: hotword-benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache ASR models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: voiceime-mixed-asr-v1
+
+      - name: Install ASR models and compile hotwords
+        run: bash scripts/09-setup-sherpa.sh
+
+      - name: Run real-speech decoder A/B
+        run: |
+          manifest="$(find samples -maxdepth 2 -name manifest.tsv -print | sort | tail -1)"
+          test -n "$manifest"
+          python3 scripts/22-benchmark-hotwords.py "$manifest" --output-dir benchmark-results
+          cat benchmark-results/hotword-report.md
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixed-language-hotword-benchmark
+          path: benchmark-results/
+          retention-days: 30
