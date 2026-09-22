@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "$0")" && pwd)"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+PERSONAL="$CONFIG_HOME/voiceime/hotwords.txt"
+COMPILED="$ROOT/hotwords/compiled.txt"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  voiceime-hotwords list
+  voiceime-hotwords add <word or phrase> [...]
+  voiceime-hotwords remove <word or phrase>
+  voiceime-hotwords rebuild
+  voiceime-hotwords path
+
+Examples:
+  ./voiceime-hotwords add "Henry Schein" "Stripe Checkout" "MyProject"
+  ./voiceime-hotwords remove "MyProject"
+EOF
+}
+
+ensure_personal() {
+  mkdir -p "$(dirname "$PERSONAL")"
+  touch "$PERSONAL"
+}
+
+rebuild() {
+  python3 "$ROOT/scripts/20-build-glossary.py" -o "$COMPILED"
+  count="$(grep -cv '^[[:space:]]*\(#\|$\)' "$COMPILED" 2>/dev/null || true)"
+  echo "compiled $count hotwords -> $COMPILED"
+  if systemctl --user is-active voiceime-ptt.service >/dev/null 2>&1; then
+    systemctl --user restart voiceime-ptt.service
+    echo "restarted voiceime-ptt.service"
+  fi
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  list)
+    ensure_personal
+    if [ ! -s "$PERSONAL" ]; then
+      echo "(personal hotword list is empty)"
+    else
+      cat "$PERSONAL"
+    fi
+    ;;
+  add)
+    shift
+    [ "$#" -gt 0 ] || { usage >&2; exit 2; }
+    ensure_personal
+    for term in "$@"; do
+      term="$(printf '%s' "$term" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [ -n "$term" ] || continue
+      if ! awk -v q="$term" 'BEGIN{IGNORECASE=1; found=0} $0==q{found=1} END{exit found?0:1}' "$PERSONAL"; then
+        printf '%s\n' "$term" >> "$PERSONAL"
+        echo "added: $term"
+      else
+        echo "already present: $term"
+      fi
+    done
+    rebuild
+    ;;
+  remove)
+    shift
+    [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+    ensure_personal
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    awk -v q="$1" 'BEGIN{IGNORECASE=1} $0!=q{print}' "$PERSONAL" > "$tmp"
+    mv "$tmp" "$PERSONAL"
+    trap - EXIT
+    echo "removed if present: $1"
+    rebuild
+    ;;
+  rebuild)
+    ensure_personal
+    rebuild
+    ;;
+  path)
+    echo "$PERSONAL"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
