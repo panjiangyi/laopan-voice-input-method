@@ -2,13 +2,6 @@ name: Modern final ASR benchmark
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "hotwords/priority.txt"
-      - "scripts/23-build-priority-hotwords.py"
-      - "scripts/24-setup-modern-final-asr.sh"
-      - "scripts/25-benchmark-modern-final.py"
-      - ".github/workflows/modern-final-benchmark.yml"
 
 concurrency:
   group: modern-final-${{ github.event.pull_request.number || github.ref }}
