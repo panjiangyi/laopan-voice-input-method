@@ -48,9 +48,45 @@ GPT
 Claude
 Claude Code
 Codex
+Codex CLI
 Gemini
 DeepSeek
 MCP
+Model Context Protocol
+MCP server
+MCP client
+vibe coding
+AI agent
+agentic AI
+agentic coding
+coding agent
+agentic workflow
+multi-agent
+subagent
+tool calling
+function calling
+structured output
+prompt engineering
+context engineering
+context window
+human in the loop
+LLM
+RAG
+retrieval-augmented generation
+OpenAI Agents SDK
+LangChain
+LangGraph
+CrewAI
+AutoGen
+GitHub Copilot
+Cursor
+Windsurf
+Cline
+Roo Code
+Aider
+OpenCode
+Devin
+Manus
 sherpa-onnx
 Sherpa
 ONNX

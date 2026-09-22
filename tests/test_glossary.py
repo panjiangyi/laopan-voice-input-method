@@ -53,6 +53,31 @@ class GlossaryTests(unittest.TestCase):
             "PostgreSQL",
             "SwiftUI",
             "Claude Code",
+            "vibe coding",
+            "AI agent",
+            "agentic workflow",
+            "tool calling",
+            "context engineering",
+            "Model Context Protocol",
+            "LangGraph",
+            "OpenAI Agents SDK",
+        ):
+            self.assertIn(expected.casefold(), folded)
+
+    def test_priority_profile_has_ai_agent_development_terms(self):
+        terms = M["read_terms"](HOTWORDS / "priority.txt")
+        folded = {term.casefold() for term in terms}
+        for expected in (
+            "vibe coding",
+            "AI agent",
+            "agentic coding",
+            "coding agent",
+            "MCP server",
+            "RAG",
+            "LangChain",
+            "GitHub Copilot",
+            "Cursor",
+            "OpenCode",
         ):
             self.assertIn(expected.casefold(), folded)
 

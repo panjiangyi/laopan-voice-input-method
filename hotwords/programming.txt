@@ -40,6 +40,78 @@ HEAD
 
 code
 coding
+vibe coding
+AI agent
+agentic AI
+agentic coding
+coding agent
+agentic workflow
+agent loop
+agent orchestration
+multi-agent
+subagent
+tool call
+tool calling
+function calling
+structured output
+system prompt
+user prompt
+prompt engineering
+context engineering
+context window
+context compression
+context compaction
+token
+token budget
+inference
+reasoning
+chain of thought
+human in the loop
+guardrail
+grounding
+hallucination
+eval
+evals
+benchmark
+LLM
+SLM
+multimodal
+vision language model
+VLM
+embedding
+embeddings
+vector database
+vector store
+semantic search
+reranking
+chunking
+RAG
+retrieval-augmented generation
+fine-tuning
+LoRA
+RLHF
+DPO
+distillation
+quantization
+Model Context Protocol
+MCP server
+MCP client
+A2A
+AG-UI
+OpenAI Agents SDK
+LangChain
+LangGraph
+CrewAI
+AutoGen
+GitHub Copilot
+Cursor
+Windsurf
+Cline
+Roo Code
+Aider
+OpenCode
+Devin
+Manus
 bug
 issue
 feature

@@ -95,6 +95,18 @@ class GlossaryCorrectorTests(unittest.TestCase):
         source = "版本 v1.3.7 价格 19.99 user 12345"
         self.assertEqual(self.c.correct(source), source)
 
+    def test_ai_agent_terms_are_canonicalized_and_fuzzy_corrected(self):
+        c = GlossaryCorrector(
+            terms=["vibe coding", "LangGraph", "MCP server"],
+            exact_terms=["AI agent", "tool calling", "OpenAI Agents SDK"],
+            aliases={},
+        )
+        self.assertEqual(c.correct("vibe codin"), "vibe coding")
+        self.assertEqual(c.correct("lang graph"), "LangGraph")
+        self.assertEqual(c.correct("mcp sever"), "MCP server")
+        self.assertEqual(c.correct("ai agent"), "AI agent")
+        self.assertEqual(c.correct("openai agents sdk"), "OpenAI Agents SDK")
+
 
 if __name__ == "__main__":
     unittest.main()
