@@ -14,7 +14,7 @@
 ./deploy.sh
 ```
 
-脚本默认启用一句话结束后的 AI 纠错；运行中回答 `n` 可关闭。启用时可继续选择：
+脚本保留交互选择：直接回车默认开启 AI，模式直接回车默认选择 `punctuation`。也可以输入 `n` 关闭 AI，或选择其他模式；非交互运行可通过环境变量配置：
 
 - `punctuation`：只调整标点和中英文空格，默认推荐。
 - `aggressive`：允许修正错字和英文词，可能改变原意。
@@ -60,8 +60,8 @@ journalctl --user -u voiceime-corrector -f
 
 ### 使用
 
-- **按住右 Alt**：开始说话，实时上屏。
-- **松开右 Alt**：结束本句。FireRedASR2 默认关闭（本机真人样本中 FireRed 的中英混合结果更差，只应用 `VOICEIME_FINAL_ENABLED=1` 显式开启做 A/B）。LLM 后处理默认开启，`punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文；想要更激进的纠错请设 `VOICEIME_LLM_MODE=aggressive`，想要完全关闭设 `VOICEIME_LLM_ENABLED=0`。
+- **按住右 Alt**：开始说话，识别文字以 Fcitx 预编辑文本实时显示。
+- **松开右 Alt**：结束本句。AI 在预编辑区内补齐标点，再把整句一次性提交，因此不会依赖退格重写，也不会把“原文 + 修正文”重复输入。FireRedASR2 默认关闭（本机真人样本中 FireRed 的中英混合结果更差，只应用 `VOICEIME_FINAL_ENABLED=1` 显式开启做 A/B）。LLM 后处理默认开启，`punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文。API 失败时仍会补一个句末句号；想要更激进的纠错请设 `VOICEIME_LLM_MODE=aggressive`，想要完全关闭设 `VOICEIME_LLM_ENABLED=0`。
 - 屏幕提示：录音时在当前活动显示器下方居中显示动态声波；AI 后处理显示“纠错中”，结束后短暂显示“纠错完成”“纠错失败”或“纠错超时”。提示窗不会获取键盘焦点。
 - `Ctrl+Alt+V`：免手持开始/停止。
 - `Ctrl+Alt+B`：结束当前听写。
@@ -191,7 +191,7 @@ bash scripts/06-app-compat.sh
 
 ## 日常使用：按住右 Alt 说话（PTT）
 
-日常服务通过本项目的 Fcitx5 插件直接提交 Unicode，仍然边说边输入。
+日常服务通过本项目的 Fcitx5 插件显示实时预编辑文本，句末纠错后一次性提交 Unicode。
 GTK 输入框通过 surrounding-text 接口修正文字；终端通过输入法接口接收退格。
 不再用 xdotool 逐个映射中文字，也不使用剪贴板。
 目标程序需要连接 Fcitx5；如果输入焦点丢失，停止本次上屏。

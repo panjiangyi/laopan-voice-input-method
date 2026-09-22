@@ -2,7 +2,7 @@
 import runpy
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,20 +23,18 @@ class ReconcilerTests(unittest.TestCase):
         patch_fn = ENGINE["TextReconciler"].patch
         self.assertEqual(patch_fn("你好测式", "你好测试"), (1, "试"))
         self.assertEqual(patch_fn("hello wor", "hello world"), (0, "ld"))
-        # Suffix walk stops at whitespace boundaries, so a space inserted
-        # between CJK and Latin yields a pure-append insert, not a rewrite.
-        self.assertEqual(patch_fn("今天review", "今天 review"), (0, " "))
-        # Mid-string LLM-style rewrite: keep the (small) prefix and suffix,
-        # only delete the mismatched middle so the native bridge accepts it.
+        self.assertEqual(patch_fn("今天review", "今天 review"), (6, " review"))
+        # The bridge edits at the end of the preedit, so a middle change must
+        # replace the complete tail rather than incorrectly preserving a
+        # common suffix that cannot be reached by the cursor.
         self.assertEqual(
             patch_fn("不是 l l m 浮现失败是 a s i 模型本身就有问",
                      "不是 LLM 浮现失败，是 ASI 模型本身就有问题"),
             (25, "LLM 浮现失败，是 ASI 模型本身就有问题"),
         )
-        # Pure CJK middle edit keeps the prefix/suffix windows narrow.
         self.assertEqual(
             patch_fn("今天写作和编程", "今天协作和编程"),
-            (1, "协"),
+            (5, "协作和编程"),
         )
 
     def test_force_final_correction_uses_session(self):
@@ -80,6 +78,42 @@ class FinalPaddingTests(unittest.TestCase):
         self.assertTrue(np.all(stream.samples == 0))
 
 
+class ReleaseTailTests(unittest.TestCase):
+    def test_audio_arriving_after_release_is_decoded_before_finish(self):
+        fn = ENGINE["run_utterance"]
+        asr = Mock()
+        asr.text.return_value = "最后"
+        asr.finalize.return_value = "最后一个字"
+        bridge = Mock()
+        bridge.begin.return_value = True
+        bridge.update.return_value = True
+        recorder = Mock()
+        recorder.poll.return_value = None
+        executor = Mock()
+        poller = Mock()
+        poller.poll.return_value = [(1, 1)]
+        clock = [0.0]
+
+        def read_tail(*_args):
+            clock[0] += 0.2
+            return b"\x01\x00" * 160
+
+        with patch.dict(fn.__globals__, start_request=1, stop_request=1,
+                        terminate=False, RELEASE_GRACE_SEC=0.35,
+                        start_recorder=lambda _: recorder, resolve_mic=lambda: "",
+                        stop_recorder=lambda _: b"", set_state=lambda _: None,
+                        set_correction_state=lambda *_: None), \
+             patch("select.poll", return_value=poller), \
+             patch("os.read", side_effect=read_tail), \
+             patch("time.monotonic", side_effect=lambda: clock[0]):
+            fn(asr, Mock(), Mock(), bridge, executor, 1)
+
+        self.assertEqual(asr.accept_pcm.call_count, 2)
+        asr.finalize.assert_called_once()
+        self.assertEqual(executor.submit.call_args.args[2], "最后一个字")
+        self.assertEqual(len(executor.submit.call_args.args[3]), 640)
+
+
 class FinalRecognizerConfigTests(unittest.TestCase):
     def test_second_pass_is_disabled_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -113,8 +147,8 @@ class AsyncRefinementTests(unittest.TestCase):
                 return text + "。"
 
         class AsyncBridge:
-            def update(self, session, remove, text):
-                calls.append((session, remove, text))
+            def finish(self, session, text):
+                calls.append((session, text))
                 return True
 
         fn = ENGINE["refine_async"]
@@ -125,9 +159,45 @@ class AsyncRefinementTests(unittest.TestCase):
         ):
             fn("s1", "实时结果", b"x" * 32000, BrokenFinal(), PunctuationOnly())
 
-        # FireRed failure must not abort the pipeline. The already-committed
-        # streaming text remains the base and later safe refinement can append.
-        self.assertEqual(calls, [("s1", 0, "。")])
+        # FireRed failure must not abort the pipeline. The streaming result is
+        # retained and committed once with punctuation.
+        self.assertEqual(calls, [("s1", "实时结果。")])
+
+    def test_failed_correction_still_gets_sentence_boundary(self):
+        calls = []
+
+        class NoFinal:
+            def transcribe(self, _pcm):
+                return ""
+
+        class FailedCorrector:
+            enabled = True
+            last_status = "failed"
+
+            def correct(self, text):
+                return text
+
+        class AsyncBridge:
+            def finish(self, session, text):
+                calls.append((session, text))
+                return True
+
+        fn = ENGINE["refine_async"]
+        with patch.dict(
+            fn.__globals__, current_session="s1", FcitxBridge=AsyncBridge
+        ):
+            fn("s1", "没有标点", b"", NoFinal(), FailedCorrector())
+
+        self.assertEqual(calls, [("s1", "没有标点。")])
+
+
+class TerminalPunctuationTests(unittest.TestCase):
+    def test_adds_only_when_sentence_has_no_ending(self):
+        ensure = ENGINE["ensure_terminal_punctuation"]
+        self.assertEqual(ensure("这是一句话"), "这是一句话。")
+        self.assertEqual(ensure("这是问题？"), "这是问题？")
+        self.assertEqual(ensure("你好！”"), "你好！”")
+        self.assertEqual(ensure("他说“你好”"), "他说“你好。”")
 
     def test_stale_session_cancels_late_refinement(self):
         class ShouldNotRun:

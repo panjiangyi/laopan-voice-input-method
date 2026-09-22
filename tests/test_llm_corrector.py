@@ -243,6 +243,8 @@ class LLMCorrectorTests(unittest.TestCase):
                 c = Corrector()
                 self.assertTrue(c._available)
                 self.assertEqual(c.correct("原文不动"), "原文不动")
+                self.assertEqual(c.last_status, "disabled")
+                self.assertEqual(len(srv.requests), 0)
 
     def test_empty_corrected_text_returns_original(self):
         with StubServer([

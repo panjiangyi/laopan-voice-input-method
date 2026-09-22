@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="VoiceIME — Linux 上唯一免费的中文 / 中英混合语音输入法。按住右 Alt 说话，松键直接上屏。对标豆包输入法 80% 体验。永远免费、开源。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23ef1f16'/%3E%3Cpath d='M11 8v7a5 5 0 0 0 10 0V8' stroke='%23ffe500' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Cpath d='M8 15a8 8 0 0 0 16 0M16 23v5M11 28h10' stroke='%23ffe500' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <meta property="og:title" content="VoiceIME | Linux 上唯一免费的中文语音输入法">
+  <meta property="og:description" content="按住右 Alt 说话，中文 / 中英混合直接上屏。对标豆包输入法 80% 体验。永远免费、开源。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://voiceime.mogician.me/">
+  <title>VoiceIME | Linux 上唯一免费的中文语音输入法</title>
+  <style>
+    :root {
+      --red: #ef1f16;
+      --yellow: #ffe500;
+      --black: #11110f;
+      --white: #f7f5ed;
+      --gray: #d9d5c9;
+      --max: 1200px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--black);
+      background: var(--white);
+      font-family: Impact, "Arial Black", "Microsoft YaHei", sans-serif;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+    a { color: inherit; text-decoration: none; }
+    .shell { width: min(calc(100% - 48px), var(--max)); margin: 0 auto; }
+    ::selection { background: var(--yellow); color: var(--black); }
+
+    /* ─── NAV ─── */
+    .topbar { position: absolute; z-index: 10; top: 0; left: 0; width: 100%; color: var(--black); }
+    .nav {
+      height: 78px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 2px solid rgba(255,255,255,.55);
+    }
+    .brand { display: flex; align-items: center; gap: 8px; font-size: 23px; font-weight: 900; }
+    .brand i { color: var(--yellow); font-style: normal; }
+    .nav-links { display: flex; align-items: center; gap: 28px; font-size: 14px; }
+    .nav-links a:hover { color: var(--yellow); }
+    .nav-cta { padding: 9px 14px; color: var(--black); background: var(--yellow); transform: rotate(-2deg); }
+    .nav-cta:hover { color: var(--black) !important; transform: rotate(0); }
+
+    /* ─── HERO ─── */
+    .hero {
+      position: relative;
+      min-height: 820px; height: 92vh; max-height: 980px;
+      display: flex; align-items: center;
+      color: var(--white);
+      background-color: var(--red);
+      background-image:
+        radial-gradient(rgba(0,0,0,.14) 1px, transparent 1px),
+        linear-gradient(112deg, transparent 0 67%, rgba(0,0,0,.07) 67% 68%, transparent 68%);
+      background-size: 5px 5px, 100% 100%;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: ""; position: absolute;
+      width: 360px; height: 80px; right: -60px; top: 110px;
+      background: #d8c29d; opacity: .72;
+      transform: rotate(17deg);
+      box-shadow: inset 0 0 28px rgba(78,55,24,.25);
+    }
+    .hero::after {
+      content: ""; position: absolute;
+      width: 240px; height: 240px; right: 8%; bottom: -120px;
+      border: 36px solid var(--yellow); border-radius: 50%;
+    }
+    .hero-inner { position: relative; z-index: 2; padding-top: 86px; }
+    .kicker {
+      display: inline-block; margin: 0 0 18px; padding: 6px 12px;
+      color: var(--black); background: var(--yellow); font-size: 15px;
+      transform: rotate(-2deg);
+    }
+    h1 {
+      max-width: 1100px; margin: 0;
+      font-size: clamp(72px, 10vw, 152px); line-height: .9; letter-spacing: 0;
+    }
+    .outlined {
+      display: inline-block; color: var(--white);
+      -webkit-text-stroke: 10px var(--black); paint-order: stroke fill;
+      filter: drop-shadow(8px 8px 0 var(--black));
+      transform: rotate(-1deg);
+    }
+    .slash { color: var(--yellow); -webkit-text-stroke: 0; filter: none; }
+    .black-strip {
+      position: relative; display: inline-block; margin-top: 16px; padding: 6px 30px 12px;
+      color: var(--yellow); background: var(--black);
+      font-size: clamp(36px, 5vw, 68px); line-height: 1.15; transform: rotate(1deg);
+      clip-path: polygon(2% 0, 97% 5%, 100% 88%, 93% 83%, 95% 100%, 4% 93%, 0 100%, 1% 16%);
+    }
+    .tag {
+      position: absolute; right: 6%; top: 42%;
+      width: 260px; padding: 16px 18px;
+      color: var(--black); background: var(--yellow);
+      font-size: 22px; text-align: center;
+      transform: rotate(-7deg);
+      border: 3px solid var(--black);
+      box-shadow: 8px 8px 0 var(--black);
+    }
+    .tag b { display: block; font-size: 36px; color: var(--red); }
+    .hero-bottom {
+      position: absolute; z-index: 3; left: 50%; bottom: 28px;
+      width: min(calc(100% - 48px), var(--max));
+      display: flex; justify-content: space-between; align-items: end;
+      transform: translateX(-50%);
+    }
+    .hero-bottom p { max-width: 620px; margin: 0; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 16px; font-weight: 700; line-height: 1.6; }
+    .scroll { font-size: 12px; writing-mode: vertical-rl; }
+
+    /* ─── TICKER ─── */
+    .ticker { overflow: hidden; padding: 16px 0; color: var(--yellow); background: var(--black); white-space: nowrap; font-size: 17px; }
+    .ticker-inner { display: inline-block; animation: ticker 28s linear infinite; }
+    .ticker span { margin-right: 30px; }
+    .ticker b { margin-right: 30px; color: var(--red); }
+    @keyframes ticker {
+      from { transform: translateX(0); }
+      to   { transform: translateX(-50%); }
+    }
+
+    /* ─── PROOF BAND ─── */
+    .proof-band { background: var(--yellow); }
+    .proof-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .proof-item { min-height: 156px; padding: 30px 24px; border-right: 3px solid var(--black); display: flex; flex-direction: column; justify-content: center; }
+    .proof-item:first-child { border-left: 3px solid var(--black); }
+    .proof-item strong { display: block; font-size: 52px; line-height: 1; color: var(--red); }
+    .proof-item span { display: block; margin-top: 12px; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 13px; font-weight: 700; line-height: 1.4; }
+
+    /* ─── SECTIONS ─── */
+    section { padding: 110px 0; border-bottom: 3px solid var(--black); }
+    .section-head { display: grid; grid-template-columns: 160px 1fr; gap: 42px; margin-bottom: 58px; }
+    .section-no { color: var(--red); font-size: 14px; }
+    h2 { max-width: 100%; margin: 0; font-size: 48px; line-height: 1.12; }
+    h2 mark { padding: 0 8px; color: var(--black); background: var(--yellow); }
+
+    /* pain cards */
+    .pain { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+    .pain-item {
+      padding: 28px 24px; background: var(--white); color: var(--black);
+      border: 3px solid var(--black); box-shadow: 6px 6px 0 var(--black);
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .pain-item:hover { transform: translate(3px, 3px); box-shadow: 3px 3px 0 var(--black); }
+    .pain-item .name { font-size: 26px; line-height: 1.15; }
+    .pain-item .why { margin: 10px 0 18px; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 14px; color: #55534d; }
+    .pain-item .stamp {
+      display: inline-block; padding: 4px 10px;
+      color: var(--white); background: var(--red); font-size: 13px;
+      transform: rotate(-2deg);
+    }
+
+    /* compare table */
+    .compare { width: 100%; border-collapse: collapse; font-size: 16px; }
+    .compare th, .compare td {
+      padding: 18px 16px; text-align: left;
+      border-bottom: 3px solid var(--black);
+      font-family: Arial, "Microsoft YaHei", sans-serif; font-weight: 700;
+    }
+    .compare th { background: var(--black); color: var(--yellow); font-size: 13px; letter-spacing: .05em; }
+    .compare th.col-us { background: var(--yellow); color: var(--black); position: relative; }
+    .compare th.col-us::after { content: "↓ 我们"; position: absolute; right: 8px; top: 8px; font-size: 10px; color: var(--red); }
+    .compare td { background: var(--white); }
+    .compare tr.us td { background: #fff9b8; }
+    .compare td.us-cell { background: var(--yellow) !important; color: var(--black); font-weight: 900; }
+    .compare td .ok { color: var(--red); }
+    .compare td .no { color: #999; }
+    .compare th:first-child, .compare td:first-child { background: var(--black); color: var(--yellow); font-weight: 500; font-size: 13px; letter-spacing: .05em; }
+
+    /* architecture (dark) */
+    .arch { color: var(--white); background: var(--black); }
+    .arch .section-no { color: var(--yellow); }
+    .arch h2 mark { color: var(--yellow); background: transparent; }
+    .pipe {
+      padding: 26px 28px;
+      background: #1a1a17; border: 3px solid var(--yellow);
+      border-radius: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 14px; line-height: 1.7;
+      color: var(--white);
+      overflow-x: auto; white-space: pre;
+    }
+    .pipe b { color: var(--yellow); font-weight: 500; }
+    .pipe .g { color: #9fe870; }
+    .pipe .o { color: #ffb86b; }
+    .pipe .c { color: #6fd6d6; }
+
+    /* numbers table */
+    .numbers-table { width: 100%; border-collapse: collapse; font-size: 16px; }
+    .numbers-table th, .numbers-table td {
+      padding: 18px 16px; text-align: left;
+      border-bottom: 3px solid var(--black);
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+    }
+    .numbers-table th { background: var(--black); color: var(--yellow); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 500; }
+    .numbers-table td { background: var(--white); }
+    .numbers-table td .v { font-family: ui-monospace, monospace; font-weight: 700; }
+    .numbers-table td .ok { color: var(--red); }
+    .numbers-table td .muted { color: #777570; font-size: 13px; }
+    .numbers-table td .na { color: #bbb; }
+
+    /* install */
+    .install { border: 3px solid var(--black); }
+    .install .tabs { display: flex; gap: 0; border-bottom: 3px solid var(--black); }
+    .install .tabs button {
+      appearance: none; background: var(--white); border: 0; padding: 14px 20px;
+      color: var(--black); font-family: ui-monospace, monospace; font-size: 13px; font-weight: 700;
+      cursor: pointer; border-right: 3px solid var(--black);
+    }
+    .install .tabs button.active { background: var(--yellow); }
+    .install .tabs button:hover:not(.active) { background: #fff9b8; }
+    .install .pre {
+      padding: 22px 24px; margin: 0; background: var(--white); color: var(--black);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13.5px; line-height: 1.75; overflow-x: auto;
+    }
+    .install .pre .c-comment { color: #99948a; }
+    .install .pre .c-cmd { color: var(--red); font-weight: 700; }
+    .install .pre .c-flag { color: #1d6e1d; }
+
+    /* status */
+    .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .status-card {
+      padding: 28px 26px; background: var(--white);
+      border: 3px solid var(--black); box-shadow: 6px 6px 0 var(--black);
+    }
+    .status-card h3 { margin: 0 0 14px; font-size: 26px; }
+    .status-card h3 .pill {
+      display: inline-block; margin-left: 10px; padding: 2px 8px;
+      background: var(--black); color: var(--yellow); font-size: 12px;
+      transform: rotate(-2deg);
+    }
+    .status-card ul { margin: 0; padding-left: 0; list-style: none; }
+    .status-card ul li {
+      padding: 10px 0 10px 30px; position: relative;
+      font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 15px;
+      border-bottom: 1px dashed #d9d5c9;
+    }
+    .status-card ul li:last-child { border-bottom: 0; }
+    .status-card ul li::before {
+      content: "✦"; position: absolute; left: 0; top: 10px; color: var(--red); font-size: 14px;
+    }
+    .status-card.gap ul li::before { content: "·"; color: #999; }
+
+    /* manifesto */
+    .manifesto { position: relative; color: var(--black); background: var(--yellow); overflow: hidden; padding: 130px 0; }
+    .manifesto::after { content: "!"; position: absolute; right: 3%; top: -130px; color: var(--red); font-size: 470px; line-height: 1; opacity: .85; }
+    .manifesto blockquote { position: relative; z-index: 1; max-width: 980px; margin: 0; font-size: clamp(40px, 7vw, 84px); line-height: 1.05; }
+    .manifesto blockquote span { color: var(--white); -webkit-text-stroke: 8px var(--black); paint-order: stroke fill; }
+    .manifesto blockquote small { display: block; margin-top: 28px; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 18px; -webkit-text-stroke: 0; color: var(--black); font-weight: 700; }
+
+    /* contact / CTA */
+    .contact { color: var(--white); background: var(--red); }
+    .contact .section-no { color: var(--yellow); }
+    .contact h2 { font-size: 56px; }
+    .contact-grid { display: grid; grid-template-columns: 1fr; gap: 52px; margin-top: 52px; }
+    .contact-cta { display: flex; flex-wrap: wrap; gap: 14px; }
+    .contact-cta a {
+      padding: 14px 20px; border: 3px solid var(--black); background: var(--white); color: var(--black);
+      font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 15px; font-weight: 700;
+      box-shadow: 5px 5px 0 var(--black);
+      transition: transform 100ms ease, box-shadow 100ms ease, background 100ms ease;
+    }
+    .contact-cta a:hover { background: var(--yellow); transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--black); }
+    .contact-cta a.primary { background: var(--yellow); }
+
+    footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+             padding: 26px 0; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 12px; }
+
+    /* ─── MOBILE ─── */
+    @media (max-width: 850px) {
+      .shell { width: min(calc(100% - 32px), var(--max)); }
+      .nav-links a:not(.nav-cta) { display: none; }
+      .hero { min-height: 740px; height: 100svh; }
+      h1 { font-size: clamp(56px, 16vw, 92px); }
+      .outlined { -webkit-text-stroke-width: 6px; filter: drop-shadow(5px 5px 0 var(--black)); }
+      .black-strip { padding: 6px 18px 10px; }
+      .tag { right: 16px; top: -36px; width: 180px; font-size: 16px; padding: 12px 14px; }
+      .tag b { font-size: 24px; }
+      .hero-bottom p { max-width: 78%; font-size: 13.5px; }
+      section { padding: 78px 0; }
+      .section-head { grid-template-columns: 1fr; gap: 12px; margin-bottom: 40px; }
+      h2, .contact h2 { font-size: 38px; }
+      .proof-grid { grid-template-columns: 1fr 1fr; }
+      .proof-item { min-height: 130px; border-bottom: 3px solid var(--black); }
+      .proof-item strong { font-size: 38px; }
+      .pain { grid-template-columns: 1fr; }
+      .status-grid { grid-template-columns: 1fr; }
+      .compare { font-size: 13px; }
+      .compare th, .compare td { padding: 10px 8px; }
+      .manifesto::after { font-size: 320px; right: -30px; }
+      .manifesto blockquote span { -webkit-text-stroke-width: 5px; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <nav class="shell nav" aria-label="主导航">
+    <a class="brand" href="#top">VoiceIME<i>.</i></a>
+    <div class="nav-links">
+      <a href="#why">为什么</a><a href="#compare">对比</a><a href="#arch">架构</a><a href="#numbers">数字</a><a href="#install">安装</a><a class="nav-cta" href="#install">五分钟上手 →</a>
+    </div>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="shell hero-inner">
+      <p class="kicker">ALPHA · 永远免费 · 开源</p>
+      <h1>
+        <span class="outlined">按住右 Alt</span><br>
+        <span class="outlined">直接说话</span><span class="slash">.</span>
+      </h1>
+      <div class="black-strip">Linux 上唯一免费的中文语音输入法</div>
+      <div class="tag"><b>90.66%</b>30 条真人样本 · 内容准确率</div>
+    </div>
+    <div class="hero-bottom">
+      <p>macOS 上有 typeless，但收费。豆包输入法没出 Linux 版。nerd-dictation 不支持中文。<br>VoiceIME 是 Linux 上按住右 Alt 就能说话、中文 / 中英混合直接上屏的日用级替代 — <b>并且免费、开源。</b></p>
+      <span class="scroll">SCROLL ↓</span>
+    </div>
+  </section>
+
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker-inner">
+      <span>SHERPA STREAMING 双语识别</span><b>✦</b><span>DEEPSEEK 标点纠错</span><b>✦</b><span>FCITX5 原生上屏</span><b>✦</b><span>FIREREDASR2 可选</span><b>✦</b><span>UBUNTU 24.04</span><b>✦</b><span>X11 优先</span><b>✦</b><span>永远免费 · 开源</span><b>✦</b>
+      <span>SHERPA STREAMING 双语识别</span><b>✦</b><span>DEEPSEEK 标点纠错</span><b>✦</b><span>FCITX5 原生上屏</span><b>✦</b><span>FIREREDASR2 可选</span><b>✦</b><span>UBUNTU 24.04</span><b>✦</b><span>X11 优先</span><b>✦</b><span>永远免费 · 开源</span><b>✦</b>
+    </div>
+  </div>
+
+  <section class="proof-band" aria-label="核心数字">
+    <div class="shell proof-grid">
+      <div class="proof-item"><strong>0 元</strong><span>永远免费，不订阅、不收费</span></div>
+      <div class="proof-item"><strong>90.66%</strong><span>30 条真人样本内容准确率</span></div>
+      <div class="proof-item"><strong>≈ 1.0s</strong><span>首字延迟，松键即上屏</span></div>
+      <div class="proof-item"><strong>100 次</strong><span>PTT 连续无卡死（开发机已验证）</span></div>
+    </div>
+  </section>
+
+  <section id="why">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">01 / WHY</div><h2>Linux 上的<mark>中文语音输入</mark>，长期是空白。</h2></div>
+      <div class="pain">
+        <article class="pain-item">
+          <div class="stamp">macOS only · 收费</div>
+          <h3 class="name">typeless</h3>
+          <p class="why">macOS / Windows 上的明星产品，中英混输和中文都做得不错。但它不出 Linux 版，并且是付费订阅。</p>
+        </article>
+        <article class="pain-item">
+          <div class="stamp">没有 Linux 版</div>
+          <h3 class="name">豆包输入法</h3>
+          <p class="why">macOS / Windows 上的中文体验天花板之一，识别质量极高。但官方至今没有 Linux 客户端，Linux 用户用不上。</p>
+        </article>
+        <article class="pain-item">
+          <div class="stamp">不支持中文</div>
+          <h3 class="name">nerd-dictation / Vosk</h3>
+          <p class="why">Linux 上的开源方案里最像样的一个，但底层是英文优化模型。中文一句话里夹一个英文词，结果就崩坏。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">02 / COMPARE</div><h2>对标豆包输入法 <mark>80% 体验</mark>，免费给到 Linux。</h2></div>
+      <table class="compare">
+        <thead>
+          <tr>
+            <th></th>
+            <th class="col-us">VoiceIME</th>
+            <th>typeless</th>
+            <th>豆包输入法</th>
+            <th>nerd-dictation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>价格</td>
+            <td class="us-cell">永久免费</td>
+            <td>订阅制</td>
+            <td>免费</td>
+            <td>免费</td>
+          </tr>
+          <tr>
+            <td>Linux 桌面</td>
+            <td class="us-cell">原生支持</td>
+            <td><span class="no">—</span></td>
+            <td><span class="no">—</span></td>
+            <td>支持</td>
+          </tr>
+          <tr class="us">
+            <td>中文识别</td>
+            <td class="us-cell"><span class="ok">90.66%</span></td>
+            <td>优秀</td>
+            <td>顶级</td>
+            <td><span class="no">弱</span></td>
+          </tr>
+          <tr class="us">
+            <td>中英混输</td>
+            <td class="us-cell">Sherpa 双语流式</td>
+            <td>支持</td>
+            <td>支持</td>
+            <td><span class="no">弱</span></td>
+          </tr>
+          <tr>
+            <td>输入法上屏</td>
+            <td class="us-cell">Fcitx5 原生</td>
+            <td>系统输入法</td>
+            <td>系统输入法</td>
+            <td>xdotool 模拟</td>
+          </tr>
+          <tr>
+            <td>开源</td>
+            <td class="us-cell">是</td>
+            <td><span class="no">否</span></td>
+            <td><span class="no">否</span></td>
+            <td>是</td>
+          </tr>
+          <tr>
+            <td>代码可控</td>
+            <td class="us-cell">完全</td>
+            <td><span class="no">否</span></td>
+            <td><span class="no">否</span></td>
+            <td>是</td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="margin-top: 24px; font-family: Arial, 'Microsoft YaHei', sans-serif; font-size: 14px; color: #55534d;">
+        VoiceIME 在「Linux 桌面 + 免费 + 代码可控」三项的交叉格里，是目前唯一的选项。
+      </p>
+    </div>
+  </section>
+
+  <section class="arch" id="arch">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">03 / ARCHITECTURE</div><h2>一条管线，<mark>按住说话 → 上屏</mark>。</h2></div>
+      <p style="font-family: Arial, 'Microsoft YaHei', sans-serif; color: #d9d5c9; max-width: 760px; margin: -16px 0 36px;">
+        实时优先保证"边说边有字"，松键后再花几百毫秒补标点、纠错、提交。一次听写是独立的 ASR stream / recorder，异常不会污染下一次。
+      </p>
+<div class="pipe"><b>Right Alt down</b>
+   │
+   ▼
+   ┌──────────────┐    16k PCM     ┌──────────────────┐
+   │  parec       │──────────────▶│  <b>Sherpa streaming</b> │
+   │  (per-press) │               │  Paraformer 中英   │
+   └──────────────┘               └────────┬─────────┘
+                                            │ partial / final
+                                            ▼
+       ┌────────────────────────────────────────────────────────┐
+       │  <b>voiceime-ptt</b> supervisor                          │
+       │  · 100ms 内恢复 idle                                     │
+       │  · 每 20ms 拉一次音频，避免积压                            │
+       │  · 持久 Gio D-Bus 直连 Fcitx5（不再每 partial 启 busctl）│
+       └────────────────────┬───────────────────────────────────┘
+                            │ final transcript
+                            ▼
+                ┌──────────────────────┐
+                │ <span class="c">DeepSeek</span> punctuation-only   │  ← 默认开启，<span class="o">aggressive</span> 可选
+                │ mode = <b>punctuation</b> (default)         │
+                └──────────┬───────────┘
+                           ▼
+                ┌──────────────────────┐
+                │ <span class="g">Fcitx5 native commit</span>      │  ← GTK surrounding-text / VTE backspace
+                └──────────┬───────────┘
+                           ▼
+                ┌──────────────────────┐
+                │ 当前焦点输入框 ← 真正上屏  │
+                └──────────────────────┘
+
+   <span class="o">Optional</span>: 松键后接 <b>FireRedASR2</b> 二遍纠错（默认关闭，需 <span class="o">VOICEIME_FINAL_ENABLED=1</span>）</div>
+    </div>
+  </section>
+
+  <section id="numbers">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">04 / NUMBERS</div><h2>不用嘴炮，用<mark>同一批真人录音</mark>跑 A/B。</h2></div>
+      <p style="font-family: Arial, 'Microsoft YaHei', sans-serif; color: #55534d; max-width: 760px; margin: -16px 0 30px;">
+        30 条日常真人样本（不是 Wenet 测试集），覆盖不同长度、口音、中英混说比例。同一份 manifest 在两条链路上跑。
+      </p>
+      <table class="numbers-table">
+        <thead>
+          <tr><th style="width: 30%">指标</th><th>Sherpa streaming（默认）</th><th>FireRedASR2（可选）</th><th>备注</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>内容准确率</td>
+            <td><span class="v ok">90.66%</span></td>
+            <td><span class="v">82.71%</span></td>
+            <td><span class="muted">这批数据参与了调优，只能做开发集</span></td>
+          </tr>
+          <tr>
+            <td>首字延迟</td>
+            <td><span class="v ok">≈ 1.0s</span></td>
+            <td><span class="v na">n/a</span></td>
+            <td><span class="muted">首字即可在 Fcitx5 预编辑区出现</span></td>
+          </tr>
+          <tr>
+            <td>标点纠错延迟</td>
+            <td><span class="v">≈ 0.8s</span></td>
+            <td><span class="v na">—</span></td>
+            <td><span class="muted">仅在松键后发生，不阻塞边说边显示</span></td>
+          </tr>
+          <tr>
+            <td>标点模式安全阈值</td>
+            <td colspan="2"><span class="v">只接受标点 / 中英文空格变化</span></td>
+            <td><span class="muted">实词被改就拒绝，保留 ASR 原文</span></td>
+          </tr>
+          <tr>
+            <td>100 次 PTT 无卡死率</td>
+            <td><span class="v ok">pass</span></td>
+            <td><span class="v na">—</span></td>
+            <td><span class="muted">supervisor 4s 超时直接重启引擎</span></td>
+          </tr>
+          <tr>
+            <td>vs 豆包同条件盲测</td>
+            <td colspan="2"><span class="v na">待做</span></td>
+            <td><span class="muted">当前数字只是开发集，未参与调优的盲测集是下一步</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">05 / INSTALL</div><h2>Ubuntu 24.04 · <mark>一条 deploy.sh</mark>。</h2></div>
+      <p style="font-family: Arial, 'Microsoft YaHei', sans-serif; color: #55534d; max-width: 760px; margin: -16px 0 30px;">
+        依赖一次性装好，之后每天一行命令就能更新。
+      </p>
+
+      <div class="install">
+        <div class="tabs" role="tablist">
+          <button class="active" data-tab="daily" role="tab">日常更新</button>
+          <button data-tab="fresh" role="tab">首次安装</button>
+          <button data-tab="run" role="tab">运行 & 调试</button>
+        </div>
+
+<pre class="pre" id="tab-daily"><span class="c-comment"># 依赖和模型已经装好时，日常更新直接：</span>
+<span class="c-cmd">./deploy.sh</span>
+<span class="c-comment"># 默认开启 DeepSeek 标点纠错；模式默认 punctuation（只补标点 / 空格）</span>
+<span class="c-comment"># 关闭 AI：</span>
+<span class="c-cmd">VOICEIME_LLM_ENABLED=0 ./deploy.sh</span></pre>
+
+<pre class="pre" id="tab-fresh" hidden><span class="c-comment"># 1. 构建 Fcitx5 原生桥</span>
+<span class="c-cmd">sudo apt-get install -y g++ libfcitx5core-dev libfcitx5utils-dev libfcitx5config-dev</span>
+<span class="c-cmd">bash native/build.sh &amp;&amp; bash native/install.sh &amp;&amp; fcitx5 -r</span>
+
+<span class="c-comment"># 2. 中英双语实时识别后端</span>
+<span class="c-cmd">bash scripts/09-setup-sherpa.sh</span>
+
+<span class="c-comment"># 3. （可选）松键后二遍纠错模型，默认关闭</span>
+<span class="c-cmd">bash scripts/11-setup-quality.sh</span>
+
+<span class="c-comment"># 4. DeepSeek 后处理：项目根 .env，权限 600</span>
+<span class="c-cmd">cat &gt; .env &lt;&lt;<span class="c-flag">'EOF'</span>
+DEEPSEEK_API_KEY=<span class="c-flag">'...'</span>
+DEEPSEEK_BASE_URL=<span class="c-flag">'https://api.deepseek.com/anthropic'</span>
+DEEPSEEK_MODEL=<span class="c-flag">'deepseek-v4-flash'</span>
+<span class="c-cmd">EOF
+chmod 600 .env</span>
+
+<span class="c-comment"># 5. 启动用户级 systemd 服务</span>
+<span class="c-cmd">bash scripts/10-install-service.sh</span></pre>
+
+<pre class="pre" id="tab-run" hidden><span class="c-comment"># 当前状态 / 进程 / 麦克风</span>
+<span class="c-cmd">./voiceime-status</span>
+
+<span class="c-comment"># 实时日志</span>
+<span class="c-cmd">journalctl --user -u voiceime-ptt -f</span>
+<span class="c-cmd">journalctl --user -u voiceime-corrector -f</span>
+
+<span class="c-comment"># 出问题时一键清理</span>
+<span class="c-cmd">./voiceime-reset</span>
+
+<span class="c-comment"># 跑同一批真人样本做 A/B</span>
+<span class="c-cmd">python3 scripts/08-offline-suite.py \
+  --manifest samples/voice-input-session-*/manifest.tsv</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="status">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">06 / STATUS</div><h2>今天的<mark>边界</mark>，和明天的边界。</h2></div>
+      <div class="status-grid">
+        <div class="status-card">
+          <h3>已经能做到 <span class="pill">DONE</span></h3>
+          <ul>
+            <li>中英混合 streaming 上屏，<b>30 条真人样本 90.66%</b></li>
+            <li>DeepSeek <b>punctuation-only</b> 安全纠错（默认）</li>
+            <li>PTT supervisor <b>4s 必重启</b>，100 次 PTT 无卡死</li>
+            <li>Fcitx5 原生提交：GTK / Qt / VTE / 终端均通过</li>
+            <li>每次听写 <b>独立 ASR stream / recorder</b></li>
+            <li>完全开源、永久免费</li>
+          </ul>
+        </div>
+        <div class="status-card gap">
+          <h3>明确还没做 <span class="pill">NEXT</span></h3>
+          <ul>
+            <li><b>Wayland</b>：当前 X11 为主，Wayland 需要 ydotool</li>
+            <li><b>多说话人分离</b>：会议场景需要</li>
+            <li><b>个人热词 / 替换表</b>：行业词、口头禅</li>
+            <li><b>更激进的纠错模式</b>：aggressive 默认不开，避免改实词</li>
+            <li><b>vs 豆包 / typeless 同条件盲测</b>：当前数字只是开发集</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="manifesto">
+    <div class="shell">
+      <blockquote>
+        Linux 上说话，<br>
+        <span>就能打字。</span><br>
+        <small>不用订阅、不用等厂商出 Linux 版 — 自己写一个，免费给到所有人。</small>
+      </blockquote>
+    </div>
+  </section>
+
+  <section class="contact" id="contact">
+    <div class="shell">
+      <div class="section-head"><div class="section-no">07 / GET STARTED</div><h2>装上，按住右 Alt，<br>开始说话。</h2></div>
+      <div class="contact-grid">
+        <div class="contact-cta">
+          <a class="primary" href="#install">查看安装 ↑</a>
+          <a href="https://github.com/panjiangyi/laopan-voice-input-method" target="_blank" rel="noopener noreferrer">GitHub 源码 ↗</a>
+          <a href="https://mogician.me" target="_blank" rel="noopener noreferrer">作者主页 ↗</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="shell">
+  <span>© 2026 VoiceIME · 永久免费 · 开源 · 一个 side project。</span>
+  <a href="#top">回到顶部 ↑</a>
+</footer>
+
+<script>
+  // install tabs
+  document.querySelectorAll('.install .tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.tab;
+      document.querySelectorAll('.install .tabs button').forEach(b => b.classList.toggle('active', b === btn));
+      ['daily','fresh','run'].forEach(k => {
+        const el = document.getElementById('tab-' + k);
+        if (el) el.hidden = (k !== id);
+      });
+    });
+  });
+</script>
+</body>
+</html>

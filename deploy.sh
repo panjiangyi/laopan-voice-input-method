@@ -16,9 +16,8 @@ die()  { printf 'build-and-start: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "do not run as root; the daemon runs as your user"
 
-# Collect all correction choices in one place. Environment variables remain
-# the non-interactive interface for automation; a terminal gets friendly
-# prompts with conservative defaults.
+# Interactive setup defaults to AI enabled and punctuation mode on Enter.
+# Environment overrides remain available for non-interactive deployments.
 LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
@@ -26,7 +25,8 @@ DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 
 if [ -t 0 ]; then
   step "Configure AI correction"
-  read -r -p "Enable AI correction after each utterance? [Y/n] " answer
+  printf '%s\n' 'AI punctuation adds commas and question marks; disabling it leaves only a fallback full stop.'
+  read -r -p "Enable AI punctuation / correction after each utterance? [Y/n] " answer
   case "${answer:-Y}" in
     [Nn]*) LLM_ENABLED=0 ;;
     *) LLM_ENABLED=1 ;;
@@ -35,7 +35,7 @@ if [ -t 0 ]; then
   if [ "$LLM_ENABLED" = 1 ]; then
     printf '%s\n' \
       'Correction mode:' \
-      '  1) punctuation — only punctuation/spacing (recommended)' \
+      '  1) punctuation — only punctuation/spacing (default)' \
       '  2) aggressive  — may repair words, but can change meaning'
     read -r -p "Choose [1]: " answer
     case "${answer:-1}" in

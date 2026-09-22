@@ -6,9 +6,9 @@ Realtime path:
   SIGUSR1 -> stop recording and commit the streaming final text
 
 FireRedASR2 + optional LLM refinement run asynchronously after the streaming
-result is committed. The engine stays responsive to the next utterance while
-refinement is in flight. Session-aware Fcitx updates make late results fail
-closed once the user edits/moves the cursor or a new utterance begins.
+result reaches Fcitx preedit. The engine stays responsive to the next utterance
+while refinement is in flight. FinishSession atomically commits the corrected
+sentence; stale results fail closed after focus/session changes.
 """
 from __future__ import annotations
 
@@ -40,6 +40,11 @@ CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
 MAX_UTTERANCE_SEC = float(os.environ.get("VOICEIME_MAX_UTTERANCE_SEC", "90"))
 FINAL_PADDING_SEC = float(os.environ.get("VOICEIME_FINAL_PADDING_SEC", "1.0"))
+# Capture real microphone audio after release before flushing the decoder.
+# Synthetic final padding cannot recover audio lost by stopping parec early.
+RELEASE_GRACE_SEC = max(0.0, min(1.0, float(os.environ.get(
+    "VOICEIME_RELEASE_GRACE_SEC", "0.35"
+))))
 MIC_SCRIPT = ROOT / "voiceime-mic"
 LOCK = RUNTIME / "voiceime-engine.lock"
 STATE_FILE = RUNTIME / "voiceime-engine.state"
@@ -162,6 +167,25 @@ class FcitxBridge:
         )
         return out.returncode == 0 and out.stdout.strip() == "b true"
 
+    def finish(self, session: str, text: str) -> bool:
+        """Atomically replace the live preedit and commit one final result."""
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "FinishSession",
+                GLib.Variant("(ss)", (session, text)),
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "FinishSession", "ss",
+                session, text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
 
 class TextReconciler:
     def __init__(self, bridge: FcitxBridge, session: str) -> None:
@@ -172,34 +196,14 @@ class TextReconciler:
 
     @staticmethod
     def patch(old: str, new: str) -> tuple[int, str]:
-        # Common prefix.
+        # Updates replace the changed tail. Keeping a common suffix is not
+        # valid here: the bridge cursor is always at the end, so it cannot
+        # edit a middle range without also replacing the suffix after it.
         n = min(len(old), len(new))
         i = 0
         while i < n and old[i] == new[i]:
             i += 1
-        # Common suffix, but only over non-whitespace tails. Whitespace at
-        # the edit boundary carries word-segmentation semantics (the
-        # original ASR output may have dropped/added a space between CJK
-        # and Latin tokens) so matching a whitespace suffix would erase a
-        # real, intentional difference. Stop the suffix walk at the first
-        # whitespace on either side and also at i so the prefix/suffix
-        # regions never overlap.
-        j_old, j_new = len(old), len(new)
-        while (
-            j_old > i
-            and j_new > i
-            and not old[j_old - 1].isspace()
-            and not new[j_new - 1].isspace()
-            and old[j_old - 1] == new[j_new - 1]
-        ):
-            j_old -= 1
-            j_new -= 1
-        # Delete the differing middle of `old`, then append the differing
-        # middle of `new`. The native bridge rejects very large destructive
-        # updates because they cannot be proven safe — keep the patch tight
-        # so LLM middle-of-string fixes (e.g. "不是 l l m X" -> "不是 LLM X")
-        # actually land instead of looking like "delete everything and retype".
-        return j_old - i, new[i:j_new]
+        return len(old) - i, new[i:]
 
     def emit(self, text: str, *, force: bool = False) -> bool:
         text = text.strip()
@@ -289,7 +293,7 @@ class LLMCorrector:
         self.mode = os.environ.get("VOICEIME_LLM_MODE", "punctuation").lower()
         self.last_status = "disabled"
         self._available = bool(self.api_key and self.base_url)
-        if not self.enabled:
+        if not getattr(self, "enabled", True):
             log("LLM corrector disabled")
             return
         if not self._available:
@@ -380,12 +384,12 @@ class LLMCorrector:
         if not text or not text.strip():
             self.last_status = "unchanged"
             return text
-        # EMERGENCY KILL SWITCH: the late-refinement rewrite path is broken
-        # on the user's machine — deleteSurroundingText and forwardKey BS
-        # both leave the streaming text in place and the LLM fix gets
-        # appended after it. Gated by VOICEIME_LLM_DISABLED so unit tests
-        # can keep exercising the corrector. Set this in systemd env to
-        # ship ASR text straight to the input box with no LLM rewrite.
+        if not getattr(self, "enabled", True):
+            self.last_status = "disabled"
+            return text
+        # Retained as an explicit operator kill switch. Normal deployments no
+        # longer need it because live text is held as an Fcitx preedit and the
+        # corrected sentence is committed atomically by FinishSession.
         if os.environ.get("VOICEIME_LLM_DISABLED", "0") == "1":
             self.last_status = "disabled"
             log("LLM corrector force-disabled (VOICEIME_LLM_DISABLED=1); "
@@ -455,6 +459,19 @@ class LLMCorrector:
         self.last_status = "success"
         log(f"LLM accepted: {len(text)}->{len(content)} chars (mode={self.mode})")
         return content
+
+
+def ensure_terminal_punctuation(text: str) -> str:
+    """Give failed/disabled correction a conservative sentence boundary."""
+    text = text.rstrip()
+    if not text:
+        return text
+    closers = "\"'”’）】》」』"
+    core = text.rstrip(closers)
+    trailing = text[len(core):]
+    if core.endswith(("。", "！", "？", "!", "?", "；", ";", "…")):
+        return text
+    return core + "。" + trailing
 
 
 class SherpaRecognizer:
@@ -615,7 +632,7 @@ def refine_async(
     try:
         refined = final_asr.transcribe(pcm)
     except Exception as ex:
-        # The streaming result has already been committed. A failing second
+        # The streaming result is already visible in preedit. A failing second
         # pass must never suppress or erase it.
         log(f"second-pass ASR failed; keeping streaming result: {ex!r}")
 
@@ -624,16 +641,7 @@ def refine_async(
         return
 
     llm_enabled = getattr(llm, "enabled", True)
-    # EMERGENCY: late-refinement delete/append is broken on this host.
-    # Skip the entire LLM block and the bridge patch path; the streaming
-    # ASR text was already committed character-by-character during
-    # recording, so the input box already holds the correct text.
-    # Gated by VOICEIME_LLM_DISABLED so unit tests can keep exercising
-    # the refinement pipeline. Service unit sets it to 1 by default.
-    if llm_enabled and os.environ.get("VOICEIME_LLM_DISABLED", "0") == "1":
-        log("refine_async: LLM refinement skipped (VOICEIME_LLM_DISABLED=1); "
-            "streaming ASR text already committed; no bridge rewrite")
-        return
+    outcome = "disabled"
     if llm_enabled:
         set_correction_state(session, "correcting")
         try:
@@ -654,25 +662,26 @@ def refine_async(
         elif final == base_text:
             set_correction_state(session, "success")
 
-    if session != current_session or final == base_text:
-        if final == base_text:
-            log(f"refine_async: final == base_text (len={len(base_text)}); no bridge call needed")
+    if session != current_session:
         return
 
-    remove, append = TextReconciler.patch(base_text, final)
-    log(f"refine_async: bridge call session={session[:8]} remove={remove} append_chars={len(append)} "
-        f"base_preview={base_text[:60]!r} final_preview={final[:60]!r} llm_status={getattr(llm, 'last_status', '?')}")
+    # The recognizer normally emits no punctuation. Even if the API is
+    # unavailable or times out, never leave a completed utterance looking
+    # like an unfinished fragment.
+    final = ensure_terminal_punctuation(final)
+    log(f"refine_async: finish session={session[:8]} chars={len(final)} "
+        f"base_preview={base_text[:60]!r} final_preview={final[:60]!r} "
+        f"llm_status={getattr(llm, 'last_status', '?')}")
     try:
         bridge = FcitxBridge()
-        ok = bridge.update(session, remove, append)
+        ok = bridge.finish(session, final)
         if not ok:
-            log(f"refine_async: bridge refused update (remove={remove} append_chars={len(append)}); "
-                f"see native bridge FCITX_WARN logs for which guard failed")
+            log("refine_async: bridge refused final commit; session/focus changed")
             if llm_enabled:
                 set_correction_state(session, "failed")
         else:
-            log(f"refine_async: bridge accepted; committed remove={remove} append_chars={len(append)}")
-            if llm_enabled:
+            log(f"refine_async: final text committed chars={len(final)}")
+            if llm_enabled and outcome == "success":
                 set_correction_state(session, "success")
     except Exception as ex:
         log(f"refine_async: bridge delivery exception: {ex!r}")
@@ -710,8 +719,16 @@ def run_utterance(
     all_audio = bytearray()
     set_state("recording")
     log(f"recording session={session[:8]}")
+    release_deadline = None
     try:
-        while stop_request < request_id and not terminate:
+        while not terminate:
+            if stop_request >= request_id:
+                if release_deadline is None:
+                    release_deadline = time.monotonic() + RELEASE_GRACE_SEC
+                    log(f"release: capturing trailing audio for {RELEASE_GRACE_SEC:.2f}s")
+                # A new press belongs to the next utterance, not this tail.
+                if start_request > request_id or time.monotonic() >= release_deadline:
+                    break
             if time.monotonic() - started > MAX_UTTERANCE_SEC:
                 log("utterance safety timeout")
                 break
@@ -738,8 +755,8 @@ def run_utterance(
             all_audio.extend(tail)
             asr.accept_pcm(stream, tail)
 
-        # Commit the streaming final result synchronously. This is the
-        # guaranteed fallback even if FireRed or LLM refinement fails later.
+        # Put the streaming final result in replaceable preedit synchronously.
+        # It stays visible while FireRed/LLM refinement runs.
         base_text = reconciler.current
         try:
             streaming_final = asr.finalize(stream).strip()
@@ -755,7 +772,7 @@ def run_utterance(
 
         set_state("suspended")
 
-        if base_text and all_audio:
+        if base_text:
             # Do not block PTT on FireRed/LLM. One worker serializes the heavy
             # second pass; stale queued jobs self-cancel via current_session.
             executor.submit(
@@ -766,6 +783,10 @@ def run_utterance(
                 final_asr,
                 llm,
             )
+        else:
+            # Clear an empty client preedit instead of leaving the input
+            # context in composition mode after a silent key press.
+            bridge.finish(session, "")
         log(f"utterance captured chars={len(base_text)}")
 
 

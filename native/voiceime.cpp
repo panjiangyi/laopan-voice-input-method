@@ -3,8 +3,10 @@
 #include <fcitx/addonmanager.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputcontextmanager.h>
+#include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
 #include <fcitx/surroundingtext.h>
+#include <fcitx/text.h>
 #include <fcitx-utils/dbus/bus.h>
 #include <fcitx-utils/dbus/objectvtable.h>
 #include <fcitx-utils/key.h>
@@ -47,10 +49,51 @@ public:
         return updateImpl(remove, text);
     }
 
+    bool finishSession(const std::string &session, const std::string &text) {
+        if (!active_ || session.empty() || session != session_ ||
+            text.size() > 65536 ||
+            (!text.empty() && !fcitx::utf8::validate(text))) {
+            return false;
+        }
+        auto *ic = instance_->inputContextManager().lastFocusedInputContext();
+        if (!ic || !ic->hasFocus() || ic->uuid() != target_) {
+            active_ = false;
+            return false;
+        }
+
+        if (preeditMode_) {
+            clearPreedit(ic);
+            if (!text.empty()) {
+                ic->commitString(text);
+            }
+        } else {
+            // A frontend without preedit support has already received the
+            // streaming text. Never try to rewrite it destructively here.
+            // Append the exact suffix when possible; otherwise salvage the
+            // LLM's sentence-ending mark so the result is still punctuated.
+            std::string suffix;
+            if (text.compare(0, committed_.size(), committed_) == 0) {
+                suffix = text.substr(committed_.size());
+            } else if (!hasTerminalPunctuation(committed_)) {
+                suffix = terminalPunctuation(text);
+            }
+            if (!suffix.empty()) {
+                ic->commitString(suffix);
+            }
+        }
+
+        committed_ = text;
+        inserted_ = fcitx::utf8::length(text);
+        active_ = false;
+        session_.clear();
+        return true;
+    }
+
     FCITX_OBJECT_VTABLE_METHOD(begin, "Begin", "", "b");
     FCITX_OBJECT_VTABLE_METHOD(update, "Update", "is", "b");
     FCITX_OBJECT_VTABLE_METHOD(beginSession, "BeginSession", "s", "b");
     FCITX_OBJECT_VTABLE_METHOD(updateSession, "UpdateSession", "sis", "b");
+    FCITX_OBJECT_VTABLE_METHOD(finishSession, "FinishSession", "ss", "b");
 
 private:
     static size_t byteOffset(const std::string &text, size_t chars) {
@@ -75,8 +118,53 @@ private:
         text.erase(byteOffset(text, keep));
     }
 
+    static bool endsWith(const std::string &text, const std::string &suffix) {
+        return text.size() >= suffix.size() &&
+               text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+
+    static std::string terminalPunctuation(const std::string &text) {
+        for (const char *mark : {"。", "！", "？", "!", "?", "；", ";", "…"}) {
+            if (endsWith(text, mark)) {
+                return mark;
+            }
+        }
+        return {};
+    }
+
+    static bool hasTerminalPunctuation(const std::string &text) {
+        return !terminalPunctuation(text).empty();
+    }
+
+    static void setPreedit(fcitx::InputContext *ic, const std::string &text) {
+        fcitx::Text preedit(text);
+        preedit.setCursor(static_cast<int>(text.size()));
+        ic->inputPanel().setClientPreedit(preedit);
+        ic->updatePreedit();
+    }
+
+    static void clearPreedit(fcitx::InputContext *ic) {
+        ic->inputPanel().setClientPreedit(fcitx::Text());
+        ic->updatePreedit();
+    }
+
     bool beginImpl(const std::string &session) {
         auto *ic = instance_->inputContextManager().lastFocusedInputContext();
+
+        // If the user starts the next utterance before the asynchronous LLM
+        // response returns, preserve the visible previous preedit instead of
+        // discarding it. The old session will be rejected when it eventually
+        // finishes.
+        if (active_ && preeditMode_ && ic && ic->hasFocus() &&
+            ic->uuid() == target_ && !committed_.empty()) {
+            std::string fallback = committed_;
+            if (!hasTerminalPunctuation(fallback)) {
+                fallback += "。";
+            }
+            clearPreedit(ic);
+            ic->commitString(fallback);
+        }
+
         active_ = ic && ic->hasFocus();
         target_ = active_ ? ic->uuid() : fcitx::ICUUID{};
         inserted_ = 0;
@@ -91,6 +179,8 @@ private:
         }
 
         ic->reset();
+        preeditMode_ =
+            ic->capabilityFlags().test(fcitx::CapabilityFlag::Preedit);
         if (ic->capabilityFlags().test(fcitx::CapabilityFlag::SurroundingText)) {
             auto &surrounding = ic->surroundingText();
             if (surrounding.isValid() &&
@@ -141,6 +231,20 @@ private:
             FCITX_WARN() << "VoiceIME: update rejected, bad params remove="
                          << remove << " text_bytes=" << text.size();
             return false;
+        }
+
+        // Client preedit is a replaceable composition owned by Fcitx. It lets
+        // partial ASR revisions and the later punctuation pass update the
+        // visible sentence without deleting already committed application
+        // text. FinishSession performs the one and only commit.
+        if (preeditMode_) {
+            if (remove) {
+                eraseLastChars(committed_, static_cast<size_t>(remove));
+            }
+            committed_ += text;
+            inserted_ = inserted_ - remove + fcitx::utf8::length(text);
+            setPreedit(ic, committed_);
+            return true;
         }
 
         // Snapshot policy:
@@ -216,6 +320,7 @@ private:
     fcitx::dbus::Bus bus_;
     fcitx::ICUUID target_{};
     bool active_ = false;
+    bool preeditMode_ = false;
     size_t inserted_ = 0;
     std::string session_;
     std::string committed_;

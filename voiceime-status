@@ -5,6 +5,7 @@ pid="$(voiceime_pid 2>/dev/null || true)"
 service_env="$(systemctl --user show "$UNIT" -p Environment --value 2>/dev/null || true)"
 engine="${VOICEIME_ENGINE:-sherpa}"
 llm_enabled="${VOICEIME_LLM_ENABLED:-0}"
+llm_disabled="${VOICEIME_LLM_DISABLED:-0}"
 llm_mode="${VOICEIME_LLM_MODE:-punctuation}"
 llm_timeout="${VOICEIME_LLM_TIMEOUT:-15.0}"
 deepseek_model="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
@@ -12,6 +13,7 @@ for setting in $service_env; do
   case "$setting" in
     VOICEIME_ENGINE=*) engine="${setting#*=}" ;;
     VOICEIME_LLM_ENABLED=*) llm_enabled="${setting#*=}" ;;
+    VOICEIME_LLM_DISABLED=*) llm_disabled="${setting#*=}" ;;
     VOICEIME_LLM_MODE=*) llm_mode="${setting#*=}" ;;
     VOICEIME_LLM_TIMEOUT=*) llm_timeout="${setting#*=}" ;;
     DEEPSEEK_MODEL=*) deepseek_model="${setting#*=}" ;;
@@ -20,7 +22,7 @@ done
 echo "daemon:    $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
 echo "overlay:   $(systemctl --user is-active voiceime-overlay.service 2>/dev/null || echo unknown)"
 echo "engine:    $engine"
-echo "llm:       enabled=$llm_enabled mode=$llm_mode timeout=${llm_timeout}s"
+echo "llm:       enabled=$llm_enabled kill_switch=$llm_disabled mode=$llm_mode timeout=${llm_timeout}s"
 echo "state:     $(voiceime_state)  (pid ${pid:--})"
 echo "instances: $(voiceime_pids | wc -l)"
 if busctl --user status org.voiceime.Input >/dev/null 2>&1; then

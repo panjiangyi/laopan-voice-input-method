@@ -28,7 +28,12 @@ bus.signal_subscribe(
     ),
     None,
 )
-call(name, path, interface, "SetCapability", GLib.Variant("(t)", (1 << 6,)))
+# Preedit + surrounding text: live recognition is replaceable composition,
+# and only FinishSession commits application text.
+call(
+    name, path, interface, "SetCapability",
+    GLib.Variant("(t)", ((1 << 1) | (1 << 6),)),
+)
 call(
     name, path, interface, "SetSurroundingText",
     GLib.Variant("(suu)", ("已有文字", 4, 4)),
@@ -54,6 +59,10 @@ assert bridge(
 assert bridge(
     "UpdateSession",
     GLib.Variant("(sis)", ("session-1", 1, "试")),
+) == (True,)
+assert bridge(
+    "FinishSession",
+    GLib.Variant("(ss)", ("session-1", "你好，这是测试。")),
 ) == (True,)
 elapsed = (time.monotonic() - start) * 1000
 
@@ -84,8 +93,8 @@ while time.monotonic() < deadline:
 
 commits = [args[0] for member, args in events if member == "CommitString"]
 deletes = [args for member, args in events if member == "DeleteSurroundingText"]
-assert commits == ["你好这是测式", "试"], events
-assert len(deletes) == 1, events
+assert commits == ["你好，这是测试。"], events
+assert len(deletes) == 0, events
 
 # Replay the exact signals an application receives and assert the final
 # input-buffer content, not just the recognizer/bridge return values.
@@ -102,7 +111,7 @@ for member, args in events:
         assert 0 <= start <= cursor <= len(buffer), (buffer, cursor, args)
         buffer = buffer[:start] + buffer[start + size:]
         cursor = start
-assert buffer == "已有文字你好这是测试", (buffer, events)
+assert buffer == "已有文字你好，这是测试。", (buffer, events)
 
 call(name, path, interface, "FocusOut")
 assert bridge(
