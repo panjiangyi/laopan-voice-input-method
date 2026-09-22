@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from voiceime_glossary import GlossaryCorrector
+from voiceime_numbers import ContextNumberNormalizer
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
@@ -941,6 +942,7 @@ def _best_final_text(
     pcm: bytes,
     final_asr: FinalRecognizer,
     glossary: GlossaryCorrector,
+    numbers: ContextNumberNormalizer,
     punctuation: PunctuationRestorer,
     executor: ThreadPoolExecutor,
 ) -> str:
@@ -1015,6 +1017,14 @@ def _best_final_text(
         )
     candidate = corrected
 
+    normalized = numbers.correct(candidate)
+    if normalized != candidate:
+        log(
+            "context number normalization applied: "
+            f"{candidate[:80]!r} -> {normalized[:80]!r}"
+        )
+    candidate = normalized
+
     punctuated = punctuation.correct(candidate)
     if punctuated != candidate:
         log("safe punctuation restoration applied")
@@ -1026,6 +1036,7 @@ def run_utterance(
     final_asr: FinalRecognizer,
     llm: LLMCorrector,
     glossary: GlossaryCorrector,
+    numbers: ContextNumberNormalizer,
     punctuation: PunctuationRestorer,
     bridge: FcitxBridge,
     executor: ThreadPoolExecutor,
@@ -1111,6 +1122,7 @@ def run_utterance(
                     bytes(all_audio),
                     final_asr,
                     glossary,
+                    numbers,
                     punctuation,
                     executor,
                 )
@@ -1163,6 +1175,7 @@ def main() -> int:
     final_asr = FinalRecognizer()
     llm = LLMCorrector()
     glossary = GlossaryCorrector()
+    numbers = ContextNumberNormalizer()
     punctuation = PunctuationRestorer()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceime-final")
 
@@ -1180,7 +1193,7 @@ def main() -> int:
             handled_request += 1
             try:
                 run_utterance(
-                    asr, final_asr, llm, glossary, punctuation,
+                    asr, final_asr, llm, glossary, numbers, punctuation,
                     bridge, executor, handled_request
                 )
             except Exception as ex:
