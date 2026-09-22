@@ -31,10 +31,21 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
-MODEL_DIR = Path(os.environ.get(
+PARAFORMER_MODEL_DIR = Path(os.environ.get(
     "VOICEIME_SHERPA_MODEL",
     ROOT / "models" / "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
 ))
+HOTWORD_MODEL_DIR = Path(os.environ.get(
+    "VOICEIME_HOTWORD_MODEL",
+    ROOT / "models" / "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+))
+HOTWORDS_FILE = Path(os.environ.get(
+    "VOICEIME_HOTWORDS_FILE",
+    ROOT / "hotwords" / "compiled.txt",
+))
+ASR_BACKEND = os.environ.get("VOICEIME_ASR_BACKEND", "auto").strip().lower()
+HOTWORDS_SCORE = float(os.environ.get("VOICEIME_HOTWORDS_SCORE", "1.5"))
+HOTWORD_MAX_ACTIVE_PATHS = int(os.environ.get("VOICEIME_HOTWORD_MAX_ACTIVE_PATHS", "4"))
 SAMPLE_RATE = 16000
 CHUNK_MS = int(os.environ.get("VOICEIME_CHUNK_MS", "80"))
 PARTIAL_MIN_INTERVAL = float(os.environ.get("VOICEIME_PARTIAL_MIN_INTERVAL", "0.08"))
@@ -458,25 +469,121 @@ class LLMCorrector:
 
 
 class SherpaRecognizer:
+    """Streaming recognizer with safe hotword-capable auto selection.
+
+    backend=auto (default):
+      prefer bilingual Zipformer + modified beam search + domain hotwords
+      when all required files exist; otherwise fall back to the proven
+      streaming Paraformer path.
+
+    backend=hotwords/zipformer:
+      require the hotword path and fail fast if it is incomplete.
+
+    backend=paraformer:
+      force the previous production recognizer.
+    """
+
     def __init__(self) -> None:
         try:
             import sherpa_onnx
         except ImportError:
             raise SystemExit("sherpa-onnx missing; run scripts/09-setup-sherpa.sh")
 
-        tokens = MODEL_DIR / "tokens.txt"
-        encoder = next((p for p in (
-            MODEL_DIR / "encoder.int8.onnx", MODEL_DIR / "encoder.onnx"
-        ) if p.exists()), None)
-        decoder = next((p for p in (
-            MODEL_DIR / "decoder.int8.onnx", MODEL_DIR / "decoder.onnx"
-        ) if p.exists()), None)
-        if not tokens.exists() or encoder is None or decoder is None:
-            raise SystemExit(f"Sherpa model is incomplete: {MODEL_DIR}")
-
+        self.backend = ""
         threads = max(1, min(4, (os.cpu_count() or 2) // 2))
-        log(f"loading sherpa model from {MODEL_DIR} with {threads} threads")
-        self.recognizer = sherpa_onnx.OnlineRecognizer.from_paraformer(
+
+        if ASR_BACKEND in ("auto", "hotwords", "zipformer", "zipformer-hotwords"):
+            try:
+                self.recognizer = self._create_hotword_recognizer(
+                    sherpa_onnx, threads
+                )
+                self.backend = "zipformer-hotwords"
+                log(
+                    "loaded bilingual Zipformer hotword ASR "
+                    f"score={HOTWORDS_SCORE:g} terms={self._hotword_count()}"
+                )
+                return
+            except Exception as ex:
+                if ASR_BACKEND != "auto":
+                    raise SystemExit(f"hotword ASR unavailable: {ex}") from ex
+                log(f"hotword ASR unavailable; falling back to Paraformer: {ex!r}")
+
+        if ASR_BACKEND not in ("auto", "paraformer"):
+            raise SystemExit(
+                "VOICEIME_ASR_BACKEND must be auto, paraformer, hotwords, "
+                "zipformer, or zipformer-hotwords"
+            )
+
+        self.recognizer = self._create_paraformer(sherpa_onnx, threads)
+        self.backend = "paraformer"
+        log(f"loaded fallback Paraformer from {PARAFORMER_MODEL_DIR}")
+
+    @staticmethod
+    def _pick(directory: Path, *names: str) -> Path:
+        for name in names:
+            path = directory / name
+            if path.exists():
+                return path
+        raise FileNotFoundError(
+            f"none of {', '.join(names)} found in {directory}"
+        )
+
+    def _hotword_count(self) -> int:
+        try:
+            return sum(
+                1 for raw in HOTWORDS_FILE.read_text(encoding="utf-8").splitlines()
+                if raw.strip() and not raw.lstrip().startswith("#")
+            )
+        except OSError:
+            return 0
+
+    def _create_hotword_recognizer(self, sherpa_onnx, threads: int):
+        model = HOTWORD_MODEL_DIR
+        tokens = self._pick(model, "tokens.txt")
+        encoder = self._pick(
+            model,
+            "encoder-epoch-99-avg-1.int8.onnx",
+            "encoder-epoch-99-avg-1.onnx",
+        )
+        decoder = self._pick(
+            model,
+            "decoder-epoch-99-avg-1.onnx",
+            "decoder-epoch-99-avg-1.int8.onnx",
+        )
+        joiner = self._pick(
+            model,
+            "joiner-epoch-99-avg-1.int8.onnx",
+            "joiner-epoch-99-avg-1.onnx",
+        )
+        bpe_vocab = self._pick(model, "bpe.vocab")
+        if not HOTWORDS_FILE.is_file() or HOTWORDS_FILE.stat().st_size == 0:
+            raise FileNotFoundError(
+                f"compiled hotwords missing: {HOTWORDS_FILE}; "
+                "run scripts/21-setup-hotword-asr.sh"
+            )
+        return sherpa_onnx.OnlineRecognizer.from_transducer(
+            tokens=str(tokens),
+            encoder=str(encoder),
+            decoder=str(decoder),
+            joiner=str(joiner),
+            num_threads=threads,
+            sample_rate=SAMPLE_RATE,
+            feature_dim=80,
+            decoding_method="modified_beam_search",
+            max_active_paths=max(1, HOTWORD_MAX_ACTIVE_PATHS),
+            hotwords_file=str(HOTWORDS_FILE),
+            hotwords_score=HOTWORDS_SCORE,
+            modeling_unit="bpe",
+            bpe_vocab=str(bpe_vocab),
+            enable_endpoint_detection=False,
+        )
+
+    def _create_paraformer(self, sherpa_onnx, threads: int):
+        model = PARAFORMER_MODEL_DIR
+        tokens = self._pick(model, "tokens.txt")
+        encoder = self._pick(model, "encoder.int8.onnx", "encoder.onnx")
+        decoder = self._pick(model, "decoder.int8.onnx", "decoder.onnx")
+        return sherpa_onnx.OnlineRecognizer.from_paraformer(
             tokens=str(tokens),
             encoder=str(encoder),
             decoder=str(decoder),
@@ -486,7 +593,6 @@ class SherpaRecognizer:
             decoding_method="greedy_search",
             enable_endpoint_detection=False,
         )
-        log("sherpa model loaded")
 
     def create_stream(self):
         return self.recognizer.create_stream()
@@ -508,10 +614,8 @@ class SherpaRecognizer:
         return value.text if hasattr(value, "text") else str(value)
 
     def finalize(self, stream) -> str:
-        # Paraformer needs trailing silence to emit its final tokens.  The old
-        # 200 ms padding truncated sentence endings in the user's real speech
-        # samples.  This is synthetic audio, so increasing it adds inference
-        # work but does not add one second of wall-clock waiting.
+        # Both streaming backends need tail context to flush final tokens.
+        # Synthetic silence adds inference work, not a matching wall-clock wait.
         stream.accept_waveform(
             SAMPLE_RATE,
             np.zeros(int(max(0.0, FINAL_PADDING_SEC) * SAMPLE_RATE), dtype=np.float32),
