@@ -27,6 +27,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PRIORITY = ROOT / "hotwords" / "priority.txt"
 ALIASES = ROOT / "hotwords" / "aliases.tsv"
+BUILTIN_GLOSSARIES = (
+    ROOT / "hotwords" / "programming.txt",
+    ROOT / "hotwords" / "work-tools.txt",
+    ROOT / "hotwords" / "dental.txt",
+)
+COMPILED = Path(os.environ.get(
+    "VOICEIME_HOTWORDS_FILE",
+    ROOT / "hotwords" / "compiled.txt",
+))
 ASCII_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\s._+:/-]{1,80}")
 
 
@@ -60,17 +69,46 @@ def load_aliases() -> dict[str, str]:
     return aliases
 
 
-def load_terms() -> list[str]:
-    # Personal words come first so an exact personal spelling wins ties.
+def _dedupe(terms: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for term in _read_terms(personal_glossary_path()) + _read_terms(PRIORITY):
+    for term in terms:
         key = term.casefold()
         if key in seen:
             continue
         seen.add(key)
         out.append(term)
     return out
+
+
+def load_terms() -> list[str]:
+    """Terms allowed to participate in fuzzy correction.
+
+    Keep fuzzy matching intentionally compact. Personal terms and the curated
+    priority list contain proper nouns / code identifiers where ASR spelling
+    repair is useful and low-risk.
+    """
+    return _dedupe(
+        _read_terms(personal_glossary_path()) + _read_terms(PRIORITY)
+    )
+
+
+def load_exact_terms() -> list[str]:
+    """All canonical vocabulary usable for exact case/spacing normalization.
+
+    The large programming/work/dental lists contain many ordinary words. They
+    are valuable when ASR already got the letters right ("react" -> "React"),
+    but must not all participate in fuzzy matching or normal English would be
+    over-corrected.
+    """
+    if COMPILED.is_file():
+        return _dedupe(_read_terms(COMPILED))
+    terms: list[str] = []
+    terms.extend(_read_terms(personal_glossary_path()))
+    for path in BUILTIN_GLOSSARIES:
+        terms.extend(_read_terms(path))
+    terms.extend(_read_terms(PRIORITY))
+    return _dedupe(terms)
 
 
 def _ascii_signature(text: str) -> str:
@@ -112,9 +150,16 @@ class GlossaryCorrector:
         self,
         terms: list[str] | None = None,
         aliases: dict[str, str] | None = None,
+        exact_terms: list[str] | None = None,
     ) -> None:
         raw_terms = terms if terms is not None else load_terms()
+        raw_exact = exact_terms if exact_terms is not None else load_exact_terms()
         self.aliases = aliases if aliases is not None else load_aliases()
+        self.exact: dict[str, str] = {}
+        for text in raw_exact:
+            signature = _ascii_signature(text)
+            if signature and signature not in self.exact:
+                self.exact[signature] = text
         self.terms: list[_Term] = []
         seen: set[str] = set()
         for text in raw_terms:
@@ -148,6 +193,9 @@ class GlossaryCorrector:
         alias = self.aliases.get(sig)
         if alias is not None:
             return alias
+        exact = self.exact.get(sig)
+        if exact is not None:
+            return exact
 
         ranked: list[tuple[float, float, _Term]] = []
         candidate_words = tuple(candidate.casefold().split())
