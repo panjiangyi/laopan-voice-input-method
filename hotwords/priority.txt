@@ -1,0 +1,123 @@
+# High-value proper nouns, acronyms, code identifiers, and domain names.
+# These are suitable for prompt-style hotwords in modern ASR models.
+# Ordinary English words are intentionally excluded to avoid over-biasing.
+
+Git
+GitHub
+GitHub Actions
+GitLab
+pull request
+PR
+CI/CD
+VS Code
+Visual Studio Code
+JavaScript
+TypeScript
+Node.js
+Next.js
+React
+Vue.js
+SwiftUI
+Python
+FastAPI
+GraphQL
+WebSocket
+gRPC
+PostgreSQL
+Postgres
+MySQL
+Redis
+MongoDB
+Docker
+Docker Compose
+Kubernetes
+K8s
+kubectl
+Helm
+Nginx
+systemd
+systemctl
+OpenTelemetry
+Sentry
+Cloudflare
+Supabase
+Firebase
+OpenAI
+ChatGPT
+GPT
+Claude
+Claude Code
+Codex
+Gemini
+DeepSeek
+MCP
+sherpa-onnx
+Sherpa
+ONNX
+FireRedASR2
+Fcitx
+Fcitx5
+FinalRecognizer
+updateSession
+user_id
+VOICEIME_ENABLE_LLM
+VOICEIME_LLM_ENABLED
+
+Stripe
+Stripe Checkout
+Stripe Billing
+Stripe Connect
+Stripe Webhook
+Stripe Payment Intent
+Stripe API
+Linear
+Vercel
+AWS
+Amazon Web Services
+EC2
+S3
+Lambda
+RDS
+CloudFront
+CloudWatch
+ECS
+EKS
+SQS
+SNS
+IAM
+VPC
+Route 53
+API Gateway
+ALB
+ELB
+
+Henry Schein
+Darby Dental
+DC Dental
+Patterson Dental
+Benco Dental
+Net32
+Safco Dental
+Dental City
+Pearson Dental
+Atlanta Dental
+Burkhart Dental
+US Dental Depot
+Zahn Dental
+Nowak Dental
+3M
+Dentsply Sirona
+Kerr
+GC America
+Septodont
+Ivoclar
+Kulzer
+VOCO
+HuFriedy
+Hu-Friedy
+CaviWipes
+Septocaine
+Lidocaine
+Articaine
+CAD/CAM
+zirconia
