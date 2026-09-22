@@ -186,7 +186,7 @@ class PreeditFinalTests(unittest.TestCase):
             ):
                 result = fn(
                     "s2", 2, "第二句实时结果", b"x" * 32000,
-                    Final(), Identity(), Identity(), executor,
+                    Final(), Identity(), Identity(), Identity(), executor,
                 )
         self.assertEqual(result, "第二句实时结果")
         self.assertEqual(calls, [])
@@ -254,7 +254,7 @@ class PreeditFinalTests(unittest.TestCase):
             ):
                 result = fn(
                     "s1", 1, "看一下破 request", b"x" * 32000,
-                    Final(), Glossary(), Punctuation(), executor,
+                    Final(), Glossary(), self.Identity(), Punctuation(), executor,
                 )
         self.assertEqual(result, "看一下 pull request。")
 
