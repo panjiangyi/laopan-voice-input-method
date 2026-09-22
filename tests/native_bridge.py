@@ -28,7 +28,10 @@ bus.signal_subscribe(
     ),
     None,
 )
-call(name, path, interface, "SetCapability", GLib.Variant("(t)", (1 << 6,)))
+call(
+    name, path, interface, "SetCapability",
+    GLib.Variant("(t)", ((1 << 6) | (1 << 1),)),
+)
 call(
     name, path, interface, "SetSurroundingText",
     GLib.Variant("(suu)", ("已有文字", 4, 4)),
@@ -112,11 +115,57 @@ for member, args in events:
         cursor -= 1
 assert buffer == "已有文字你好这是测试", (buffer, events)
 
+# Preedit mode: live revisions must never enter the application document.
+call(
+    name, path, interface, "SetSurroundingText",
+    GLib.Variant("(suu)", ("前文", 2, 2)),
+)
+assert bridge("BeginSession", GLib.Variant("(s)", ("session-3",))) == (True,)
+before_preview = len(events)
+assert bridge(
+    "PreviewSession",
+    GLib.Variant("(ss)", ("session-3", "帮我看 GitHub")),
+) == (True,)
+assert bridge(
+    "PreviewSession",
+    GLib.Variant("(ss)", ("session-3", "帮我看 GitHub Actions")),
+) == (True,)
+
+deadline = time.monotonic() + .05
+while time.monotonic() < deadline:
+    GLib.MainContext.default().iteration(False)
+    time.sleep(.001)
+preview_events = events[before_preview:]
+assert not [
+    e for e in preview_events
+    if e[0] in ("CommitString", "ForwardKey", "DeleteSurroundingText")
+], preview_events
+
+assert bridge(
+    "CommitSession",
+    GLib.Variant("(ss)", ("session-3", "帮我看 GitHub Actions")),
+) == (True,)
+deadline = time.monotonic() + .05
+while time.monotonic() < deadline:
+    GLib.MainContext.default().iteration(False)
+    time.sleep(.001)
+final_events = events[before_preview:]
+final_commits = [args[0] for member, args in final_events if member == "CommitString"]
+assert final_commits == ["帮我看 GitHub Actions"], final_events
+assert not [args for member, args in final_events if member == "ForwardKey"], final_events
+assert not [args for member, args in final_events if member == "DeleteSurroundingText"], final_events
+
+# Session closes after the atomic commit; late final results fail closed.
+assert bridge(
+    "CommitSession",
+    GLib.Variant("(ss)", ("session-3", "迟到结果")),
+) == (False,)
+
 call(name, path, interface, "FocusOut")
 assert bridge(
     "UpdateSession",
     GLib.Variant("(sis)", ("session-2", 0, "不应输入")),
 ) == (False,)
 
-print("PASS: session/range guarded native commits and corrections")
+print("PASS: legacy guards + preedit atomic final commit")
 print("Two native updates: %.1f ms" % elapsed)
