@@ -18,7 +18,7 @@ jobs:
             dbus-x11
       - name: Python syntax
         run: |
-          python3 -m py_compile             voiceime-engine voiceime-ptt voiceime_glossary.py             scripts/08-offline-suite.py scripts/20-build-glossary.py scripts/22-benchmark-hotwords.py scripts/23-build-priority-hotwords.py scripts/25-benchmark-modern-final.py scripts/26-benchmark-production-pipeline.py scripts/27-benchmark-number-itn.py scripts/23-build-priority-hotwords.py scripts/25-benchmark-modern-final.py             tests/test_voiceime.py tests/test_engine_logic.py             tests/test_llm_corrector.py tests/test_benchmark.py tests/test_glossary.py tests/test_glossary_corrector.py             tests/native_bridge.py
+          python3 -m py_compile             voiceime-engine voiceime-ptt voiceime_glossary.py voiceime_numbers.py             scripts/08-offline-suite.py scripts/20-build-glossary.py scripts/22-benchmark-hotwords.py scripts/23-build-priority-hotwords.py scripts/25-benchmark-modern-final.py scripts/26-benchmark-production-pipeline.py scripts/27-benchmark-number-itn.py scripts/23-build-priority-hotwords.py scripts/25-benchmark-modern-final.py             tests/test_voiceime.py tests/test_engine_logic.py             tests/test_llm_corrector.py tests/test_benchmark.py tests/test_glossary.py tests/test_glossary_corrector.py             tests/native_bridge.py
       - name: Shell syntax
         run: |
           bash -n voiceime-lib.sh voiceime-begin voiceime-end voiceime-mic voiceime-reset voiceime-status voiceime-hotwords
