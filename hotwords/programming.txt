@@ -481,3 +481,24 @@ Linear
 Jira
 Slack
 Notion
+
+# VoiceIME / speech-recognition terms observed in real user samples
+sherpa-onnx
+sherpa onnx
+Sherpa
+ONNX
+FireRedASR
+FireRedASR2
+Fcitx
+Fcitx5
+FinalRecognizer
+updateSession
+user_id
+VOICEIME_ENABLE_LLM
+VOICEIME_LLM_ENABLED
+endpoint triggered
+monitor source
+USB
+wav
+WAV
+systemd user service
