@@ -43,7 +43,7 @@ HOTWORDS_FILE = Path(os.environ.get(
     "VOICEIME_HOTWORDS_FILE",
     ROOT / "hotwords" / "compiled.txt",
 ))
-ASR_BACKEND = os.environ.get("VOICEIME_ASR_BACKEND", "auto").strip().lower()
+ASR_BACKEND = os.environ.get("VOICEIME_ASR_BACKEND", "paraformer").strip().lower()
 HOTWORDS_SCORE = float(os.environ.get("VOICEIME_HOTWORDS_SCORE", "1.5"))
 HOTWORD_MAX_ACTIVE_PATHS = int(os.environ.get("VOICEIME_HOTWORD_MAX_ACTIVE_PATHS", "4"))
 SAMPLE_RATE = 16000
@@ -471,10 +471,12 @@ class LLMCorrector:
 class SherpaRecognizer:
     """Streaming recognizer with safe hotword-capable auto selection.
 
-    backend=auto (default):
-      prefer bilingual Zipformer + modified beam search + domain hotwords
-      when all required files exist; otherwise fall back to the proven
-      streaming Paraformer path.
+    backend=paraformer (default):
+      keep the real-speech winner as the production streaming path.
+
+    backend=auto:
+      experimental: try bilingual Zipformer + hotwords, then fall back to
+      Paraformer. Real-speech benchmarks currently favor Paraformer.
 
     backend=hotwords/zipformer:
       require the hotword path and fail fast if it is incomplete.
