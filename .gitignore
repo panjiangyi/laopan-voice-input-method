@@ -24,3 +24,6 @@ __pycache__/
 !.env.example
 *.cookie
 *.log
+
+# Generated merged ASR hotword list
+hotwords/compiled.txt
