@@ -1,46 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+NAME="sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25"
+DIR="$ROOT/models/$NAME"
+URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$NAME.tar.bz2"
+
+echo "Installing optional high-accuracy final recognizer..."
 mkdir -p "$ROOT/models"
-
-download_asr() {
-  local name="$1"
-  local dir="$ROOT/models/$name"
-  local url="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$name.tar.bz2"
-  if [ ! -d "$dir" ]; then
-    local tmp
-    tmp="$(mktemp --suffix=.tar.bz2)"
-    trap 'rm -f "$tmp"' RETURN
-    echo "Downloading $name..."
-    curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$url"
-    tar -xjf "$tmp" -C "$ROOT/models"
-    rm -f "$tmp"
-    trap - RETURN
-  fi
-}
-
-FINAL_NAME="sherpa-onnx-paraformer-zh-2024-03-09"
-PUNCT_NAME="sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
-PUNCT_DIR="$ROOT/models/$PUNCT_NAME"
-
-echo "[1/3] Installing fast high-accuracy final Paraformer..."
-download_asr "$FINAL_NAME"
-test -f "$ROOT/models/$FINAL_NAME/model.int8.onnx"
-test -f "$ROOT/models/$FINAL_NAME/tokens.txt"
-
-echo "[2/3] Installing deterministic Chinese/English punctuation model..."
-if [ ! -d "$PUNCT_DIR" ]; then
+if [ ! -d "$DIR" ]; then
   tmp="$(mktemp --suffix=.tar.bz2)"
   trap 'rm -f "$tmp"' EXIT
-  curl -fL --retry 3 --retry-delay 2 -o "$tmp"     "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/$PUNCT_NAME.tar.bz2"
+  curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$URL"
   tar -xjf "$tmp" -C "$ROOT/models"
-  rm -f "$tmp"
-  trap - EXIT
 fi
-test -f "$PUNCT_DIR/model.int8.onnx"
-
-echo "[3/3] Quality models ready."
-echo "Final ASR: $ROOT/models/$FINAL_NAME"
-echo "Punctuation: $PUNCT_DIR"
-echo "Real-speech baseline: final Paraformer 9.61% CER before glossary correction."
-systemctl --user restart voiceime-ptt.service 2>/dev/null || true
+test -f "$DIR/model.int8.onnx"
+test -f "$DIR/tokens.txt"
+echo "Installed: $DIR"
+echo "FireRed is installed for A/B testing but remains disabled by default."
+echo "Set VOICEIME_FINAL_ENABLED=1 only after it improves your own benchmark."
+echo "Restarting VoiceIME..."
+systemctl --user restart voiceime-ptt.service || true
