@@ -32,11 +32,9 @@ bash native/build.sh
 bash native/install.sh
 fcitx5 -r
 
-# 2. 安装中英双语实时识别后端
+# 2. 一次安装完整生产 ASR 栈：
+#    streaming Paraformer + offline final Paraformer + 本地标点模型
 bash scripts/09-setup-sherpa.sh
-
-# 3. 安装松键后的快速 final + 本地标点模型
-bash scripts/11-setup-quality.sh
 
 # 4. DeepSeek 后处理仅供 legacy 模式实验，preedit 默认路径不依赖它
 #    需要时才在 .env / 环境变量里启用 VOICEIME_LLM_ENABLED=1
