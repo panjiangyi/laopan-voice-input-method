@@ -70,6 +70,19 @@ class GlossaryCorrectorTests(unittest.TestCase):
         )
         self.assertEqual(result, "今天中文识别已经很好了，重新启动 systemd 服务")
 
+    def test_large_builtin_vocabulary_can_canonicalize_exact_terms(self):
+        c = GlossaryCorrector(
+            terms=["GitHub"],
+            exact_terms=["React", "Docker Compose", "dental implant"],
+            aliases={},
+        )
+        self.assertEqual(c.correct("react"), "React")
+        self.assertEqual(c.correct("docker compose"), "Docker Compose")
+        # Ordinary domain terms can be normalized when already exact, but the
+        # full vocabulary is not allowed to fuzzy-rewrite unrelated English.
+        self.assertEqual(c.correct("dental implant"), "dental implant")
+        self.assertEqual(c.correct("dental implants"), "dental implants")
+
     def test_does_not_free_rewrite_unrelated_english(self):
         source = "please keep this completely ordinary sentence unchanged"
         self.assertEqual(self.c.correct(source), source)
