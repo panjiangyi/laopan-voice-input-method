@@ -1,7 +1,8 @@
 # VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
-> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次识别（默认关闭）+
-> DeepSeek API 文本纠错（可选）+ Fcitx5 原生提交。
+> 当前推荐版本：Sherpa 双语流式识别。安装 hotword 模型后优先使用
+> Zipformer + modified beam search + 领域词库；模型缺失时自动退回原 Paraformer。
+> FireRedASR2 二次识别默认关闭，DeepSeek 后处理可选，最终通过 Fcitx5 原生提交。
 > 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
 
 ## 推荐安装（日用路径）
@@ -32,6 +33,7 @@ bash native/install.sh
 fcitx5 -r
 
 # 2. 安装中英双语实时识别后端
+#    同时安装 Paraformer fallback + Zipformer hotword decoder
 bash scripts/09-setup-sherpa.sh
 
 # 3. 可选：安装松键后的二次识别模型（默认关闭，先用真人录音 A/B）
@@ -81,25 +83,38 @@ journalctl --user -u voiceime-corrector -f
 
 当前目标是把日常中文与中英混合口述做到“可以替代大部分键盘输入”的 Alpha。是否达到“豆包输入法 80%”必须用同一批真人录音做 A/B 基准，不能只靠主观描述。后续以首字延迟、最终纠错延迟、中文 CER、中英 code-switch WER、连续 100 次 PTT 无卡死率作为验收指标。
 
-### 领域词库（为中英混输 hotword bias 准备）
+### 中英混输领域词库
 
-项目现在维护可复用的领域词库：
+项目维护三套内置领域词库，并在启动前合并：
 
-- `hotwords/programming.txt`：前端、后端、Git/GitHub、数据库、DevOps、AI。
-- `hotwords/work-tools.txt`：Stripe、Linear、Vercel、AWS 及其常用子产品。
+- `hotwords/programming.txt`：前端、后端、Git/GitHub、数据库、DevOps、AI、VoiceIME。
+- `hotwords/work-tools.txt`：Stripe、Linear、Vercel、AWS 及常用子产品。
 - `hotwords/dental.txt`：美国牙科供应商、品牌、产品和常用牙科术语。
 
-可以生成一个去重后的规范词表：
+安装 `scripts/09-setup-sherpa.sh` 后，`auto` 模式优先使用 bilingual
+Zipformer + `modified_beam_search` + contextual hotword bias。若 hotword
+模型/词表不存在，引擎自动回退到原 Paraformer，不会因为个性化词库导致输入法
+无法启动。
 
-```bash
-python3 scripts/20-build-glossary.py -o /tmp/voiceime-glossary.txt
+个人词库放在：
+
+```text
+~/.config/voiceime/hotwords.txt
 ```
 
-词库目前**不会直接改变生产 Paraformer 的解码结果**。当前实时链路仍使用
-`OnlineRecognizer.from_paraformer(..., decoding_method="greedy_search")`；
-sherpa-onnx 的 contextual hotword bias 需要 hotword-capable decoder（例如
-Transducer/Zipformer + `modified_beam_search`）。在真人录音 A/B 证明不会牺牲
-现有中文准确率之前，不默认切换识别器。
+也可以直接用命令维护；修改后会重新生成合并词表并重启输入服务：
+
+```bash
+./voiceime-hotwords add "Henry Schein" "Darby Dental" "Stripe Checkout"
+./voiceime-hotwords add "MyProject" "MyCompany"
+./voiceime-hotwords list
+./voiceime-hotwords remove "MyProject"
+./voiceime-hotwords rebuild
+```
+
+实际传给 Sherpa 的合并文件是 `hotwords/compiled.txt`，它由脚本生成、不提交
+到 Git。默认 hotword 分值通过 `VOICEIME_HOTWORDS_SCORE` 控制，识别后端通过
+`VOICEIME_ASR_BACKEND=auto|paraformer|zipformer-hotwords` 控制。
 
 ### 用真人录音评测
 
