@@ -25,19 +25,29 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            models/sherpa-onnx-streaming-paraformer-bilingual-zh-en
             models/sherpa-onnx-paraformer-zh-2024-03-09
             models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8
           key: voiceime-production-quality-v1
       - name: Install runtime
         run: |
           python3 -m pip install --user --break-system-packages -U sherpa-onnx numpy
+      - name: Install production streaming model
+        run: |
+          name="sherpa-onnx-streaming-paraformer-bilingual-zh-en"
+          dir="models/$name"
+          if [ ! -d "$dir" ]; then
+            curl -fL --retry 3 --retry-delay 2 -o /tmp/streaming.tar.bz2               "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$name.tar.bz2"
+            tar -xjf /tmp/streaming.tar.bz2 -C models
+          fi
+          test -f "$dir/tokens.txt"
       - name: Install production final models
         run: bash scripts/11-setup-quality.sh
       - name: Benchmark exact production text pipeline
         run: |
           manifest="$(find samples -maxdepth 2 -name manifest.tsv -print | sort | tail -1)"
           test -n "$manifest"
-          python3 scripts/26-benchmark-production-pipeline.py "$manifest" --output-dir benchmark-results-production
+          python3 scripts/26-benchmark-production-pipeline.py "$manifest"             --max-wait 1.2 --max-audio 10.0             --output-dir benchmark-results-production
           cat benchmark-results-production/report.md
       - name: Upload production benchmark
         uses: actions/upload-artifact@v4
