@@ -4,7 +4,7 @@ ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$UNIT_DIR"
 
-LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
+LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
