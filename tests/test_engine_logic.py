@@ -113,13 +113,78 @@ class PreeditFinalTests(unittest.TestCase):
                 fn.__globals__,
                 current_session="s1",
                 start_request=2,
-                FINAL_MAX_WAIT_SEC=0.8,
+                FINAL_MAX_WAIT_SEC=1.2,
+                FINAL_MAX_AUDIO_SEC=10.0,
+                final_inflight=None,
             ):
                 result = fn(
                     "s1", 1, "重启 system d", b"x" * 32000,
                     Final(), Glossary(), Punctuation(), executor,
                 )
         self.assertEqual(result, "重启 systemd。")
+        self.assertEqual(calls, [])
+
+    def test_long_utterance_skips_offline_final(self):
+        calls = []
+
+        class Final:
+            recognizer = object()
+            def transcribe(self, _pcm):
+                calls.append("final")
+                return "不应该运行"
+
+        class Identity:
+            def correct(self, text):
+                return text
+
+        fn = ENGINE["_best_final_text"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.dict(
+                fn.__globals__,
+                current_session="s1",
+                start_request=1,
+                FINAL_MAX_WAIT_SEC=1.2,
+                FINAL_MAX_AUDIO_SEC=1.0,
+                final_inflight=None,
+            ):
+                result = fn(
+                    "s1", 1, "长句实时结果", b"x" * (16000 * 2 * 2),
+                    Final(), Identity(), Identity(), executor,
+                )
+        self.assertEqual(result, "长句实时结果")
+        self.assertEqual(calls, [])
+
+    def test_busy_final_worker_never_queues_another_job(self):
+        from concurrent.futures import Future
+
+        busy = Future()
+        calls = []
+
+        class Final:
+            recognizer = object()
+            def transcribe(self, _pcm):
+                calls.append("final")
+                return "不应该排队"
+
+        class Identity:
+            def correct(self, text):
+                return text
+
+        fn = ENGINE["_best_final_text"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.dict(
+                fn.__globals__,
+                current_session="s2",
+                start_request=2,
+                FINAL_MAX_WAIT_SEC=1.2,
+                FINAL_MAX_AUDIO_SEC=10.0,
+                final_inflight=busy,
+            ):
+                result = fn(
+                    "s2", 2, "第二句实时结果", b"x" * 32000,
+                    Final(), Identity(), Identity(), executor,
+                )
+        self.assertEqual(result, "第二句实时结果")
         self.assertEqual(calls, [])
 
     def test_fast_final_is_glossary_corrected_before_commit(self):
@@ -142,7 +207,9 @@ class PreeditFinalTests(unittest.TestCase):
                 fn.__globals__,
                 current_session="s1",
                 start_request=1,
-                FINAL_MAX_WAIT_SEC=1.0,
+                FINAL_MAX_WAIT_SEC=1.2,
+                FINAL_MAX_AUDIO_SEC=10.0,
+                final_inflight=None,
             ):
                 result = fn(
                     "s1", 1, "看一下破 request", b"x" * 32000,
