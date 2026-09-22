@@ -19,17 +19,17 @@ die()  { printf 'build-and-start: %s\n' "$*" >&2; exit 1; }
 # Collect all correction choices in one place. Environment variables remain
 # the non-interactive interface for automation; a terminal gets friendly
 # prompts with conservative defaults.
-LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
+LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 
 if [ -t 0 ]; then
   step "Configure AI correction"
-  read -r -p "Enable optional DeepSeek correction for legacy output mode? [y/N] " answer
-  case "${answer:-N}" in
-    [Yy]*) LLM_ENABLED=1 ;;
-    *) LLM_ENABLED=0 ;;
+  read -r -p "Enable AI correction after each utterance? [Y/n] " answer
+  case "${answer:-Y}" in
+    [Nn]*) LLM_ENABLED=0 ;;
+    *) LLM_ENABLED=1 ;;
   esac
 
   if [ "$LLM_ENABLED" = 1 ]; then
@@ -133,28 +133,17 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 
-# 3. Rebuild domain + personal hotwords before the daemon starts.
-step "Build mixed-language hotword glossary"
-python3 "$ROOT/scripts/20-build-glossary.py" -o "$ROOT/hotwords/compiled.txt"
-
-# 3a. Verify the measured production models.
-step "Verify production ASR models"
+# 3. Sanity-check the Sherpa backend; warn (don't fail) if first-time setup
+#    is still needed. Without it the daemon will start but dictate nothing.
+step "Verify Sherpa streaming backend"
 SHERPA_MODEL="$ROOT/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en"
-FINAL_MODEL="$ROOT/models/sherpa-onnx-paraformer-zh-2024-03-09"
-PUNCT_MODEL="$ROOT/models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
 if [ ! -f "$SHERPA_MODEL/tokens.txt" ]; then
-  printf '\nWARNING: streaming Paraformer missing at %s\n' "$SHERPA_MODEL"
+  printf '\nWARNING: Sherpa bilingual model not found at %s\n' "$SHERPA_MODEL"
   printf 'First-time setup needed; run once:\n  bash scripts/09-setup-sherpa.sh\n\n'
 fi
-if [ ! -f "$FINAL_MODEL/model.int8.onnx" ] || [ ! -f "$PUNCT_MODEL/model.int8.onnx" ]; then
-  printf '\nWARNING: final quality models are incomplete.\n'
-  printf 'Install them with:\n  bash scripts/11-setup-quality.sh\n\n'
-else
-  printf '  ✓ streaming + fast final Paraformer + punctuation models ready\n'
-fi
 
-# 3b. DeepSeek is optional and not part of the production preedit pipeline.
-step "Configure optional DeepSeek correction"
+# 3b. DeepSeek is called directly by voiceime-engine; retire the old wrapper.
+step "Configure DeepSeek correction"
 systemctl --user disable --now voiceime-corrector.service 2>/dev/null || true
 if [ "$LLM_ENABLED" = 1 ]; then
   [ -s "$ROOT/.env" ] || die "AI correction enabled but $ROOT/.env is missing"
