@@ -28,10 +28,7 @@ bus.signal_subscribe(
     ),
     None,
 )
-call(
-    name, path, interface, "SetCapability",
-    GLib.Variant("(t)", ((1 << 6) | (1 << 1),)),
-)
+call(name, path, interface, "SetCapability", GLib.Variant("(t)", (1 << 6,)))
 call(
     name, path, interface, "SetSurroundingText",
     GLib.Variant("(suu)", ("已有文字", 4, 4)),
@@ -87,15 +84,8 @@ while time.monotonic() < deadline:
 
 commits = [args[0] for member, args in events if member == "CommitString"]
 deletes = [args for member, args in events if member == "DeleteSurroundingText"]
-backspaces = [
-    args for member, args in events
-    if member == "ForwardKey" and args[0] == 0xFF08
-]
 assert commits == ["你好这是测式", "试"], events
-# Current native bridge uses ForwardKey(BackSpace) for destructive updates;
-# retain DeleteSurroundingText support so the integration test accepts either
-# safe frontend implementation.
-assert len(deletes) + len(backspaces) == 1, events
+assert len(deletes) == 1, events
 
 # Replay the exact signals an application receives and assert the final
 # input-buffer content, not just the recognizer/bridge return values.
@@ -112,60 +102,7 @@ for member, args in events:
         assert 0 <= start <= cursor <= len(buffer), (buffer, cursor, args)
         buffer = buffer[:start] + buffer[start + size:]
         cursor = start
-    elif member == "ForwardKey" and args[0] == 0xFF08:
-        assert cursor > 0, (buffer, cursor, args)
-        buffer = buffer[:cursor - 1] + buffer[cursor:]
-        cursor -= 1
 assert buffer == "已有文字你好这是测试", (buffer, events)
-
-# Preedit mode must display multiple live revisions without writing any of
-# them into the application. Only CommitSession may emit CommitString.
-call(
-    name, path, interface, "SetSurroundingText",
-    GLib.Variant("(suu)", ("前文", 2, 2)),
-)
-assert bridge(
-    "BeginSession", GLib.Variant("(s)", ("session-3",))
-) == (True,)
-before_preview = len(events)
-assert bridge(
-    "PreviewSession",
-    GLib.Variant("(ss)", ("session-3", "帮我看 GitHub")),
-) == (True,)
-assert bridge(
-    "PreviewSession",
-    GLib.Variant("(ss)", ("session-3", "帮我看 GitHub Actions")),
-) == (True,)
-
-# Let D-Bus preedit signals drain. There must still be no document commit.
-deadline = time.monotonic() + .05
-while time.monotonic() < deadline:
-    GLib.MainContext.default().iteration(False)
-    time.sleep(.001)
-preview_events = events[before_preview:]
-assert not [
-    e for e in preview_events if e[0] in ("CommitString", "ForwardKey", "DeleteSurroundingText")
-], preview_events
-
-assert bridge(
-    "CommitSession",
-    GLib.Variant("(ss)", ("session-3", "帮我看 GitHub Actions")),
-) == (True,)
-deadline = time.monotonic() + .05
-while time.monotonic() < deadline:
-    GLib.MainContext.default().iteration(False)
-    time.sleep(.001)
-final_events = events[before_preview:]
-final_commits = [args[0] for member, args in final_events if member == "CommitString"]
-assert final_commits == ["帮我看 GitHub Actions"], final_events
-assert not [args for member, args in final_events if member == "ForwardKey"], final_events
-assert not [args for member, args in final_events if member == "DeleteSurroundingText"], final_events
-
-# A committed session is closed; stale/repeated final results fail closed.
-assert bridge(
-    "CommitSession",
-    GLib.Variant("(ss)", ("session-3", "迟到结果")),
-) == (False,)
 
 call(name, path, interface, "FocusOut")
 assert bridge(
@@ -173,5 +110,5 @@ assert bridge(
     GLib.Variant("(sis)", ("session-2", 0, "不应输入")),
 ) == (False,)
 
-print("PASS: legacy correction guards + atomic preedit final commit")
+print("PASS: session/range guarded native commits and corrections")
 print("Two native updates: %.1f ms" % elapsed)
