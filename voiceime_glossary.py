@@ -26,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PRIORITY = ROOT / "hotwords" / "priority.txt"
+ALIASES = ROOT / "hotwords" / "aliases.tsv"
 ASCII_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\s._+:/-]{1,80}")
 
 
@@ -42,6 +43,21 @@ def _read_terms(path: Path) -> list[str]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
+
+
+def load_aliases() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    if not ALIASES.is_file():
+        return aliases
+    for raw in ALIASES.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw or raw.startswith("#") or "\t" not in raw:
+            continue
+        alias, canonical = raw.split("\t", 1)
+        key = _ascii_signature(alias)
+        if key and canonical.strip():
+            aliases[key] = canonical.strip()
+    return aliases
 
 
 def load_terms() -> list[str]:
@@ -92,8 +108,13 @@ class _Term:
 
 
 class GlossaryCorrector:
-    def __init__(self, terms: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        terms: list[str] | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> None:
         raw_terms = terms if terms is not None else load_terms()
+        self.aliases = aliases if aliases is not None else load_aliases()
         self.terms: list[_Term] = []
         seen: set[str] = set()
         for text in raw_terms:
@@ -124,6 +145,9 @@ class GlossaryCorrector:
         sig = _ascii_signature(candidate)
         if len(sig) < 3:
             return None
+        alias = self.aliases.get(sig)
+        if alias is not None:
+            return alias
 
         ranked: list[tuple[float, float, _Term]] = []
         candidate_words = tuple(candidate.casefold().split())
