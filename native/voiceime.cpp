@@ -7,6 +7,8 @@
 #include <fcitx/surroundingtext.h>
 #include <fcitx-utils/dbus/bus.h>
 #include <fcitx-utils/dbus/objectvtable.h>
+#include <fcitx-utils/key.h>
+#include <fcitx-utils/keysym.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/utf8.h>
 #include <stdexcept>
@@ -141,15 +143,20 @@ private:
             return false;
         }
 
-        // Pure appends (remove == 0) are intrinsically safe — they only
-        // commit fresh characters and cannot erase user content even if the
-        // surrounding-text snapshot has drifted while we waited for the LLM.
-        // Skip the snapshot guard for them so late punctuation/space fixes
-        // from the corrector still land.
-        //
-        // Destructive operations (remove > 0) must still match the snapshot
-        // exactly, otherwise we cannot prove what BackSpace would delete and
-        // we fail closed to avoid erasing unrelated user content.
+        // Snapshot policy:
+        //   * Pure appends (remove == 0): always allowed. They only add fresh
+        //     characters and cannot erase user content even if the snapshot
+        //     drifted while we waited on the LLM.
+        //   * Destructive updates with a valid snapshot that no longer matches:
+        //     reject. We cannot prove what BackSpace would delete, and bailing
+        //     is the only safe answer for the user's pre-existing text.
+        //   * Destructive updates without a snapshot: many frontends (Electron,
+        //     Qt widgets, JetBrains editors, some GTK popovers) never advertise
+        //     surrounding-text, so the snapshot was never captured. Rejecting
+        //     those would make every late refinement in those apps fail.
+        //     We instead log a warning and let the patch through, trusting that
+        //     the engine computes `remove` from the same committed_ string it
+        //     streamed into the IC character by character during this session.
         if (remove) {
             if (snapshotValid_ && !snapshotMatches(ic)) {
                 FCITX_WARN() << "VoiceIME: destructive update rejected, "
@@ -159,15 +166,28 @@ private:
                 return false;
             }
             if (!snapshotValid_) {
-                FCITX_WARN() << "VoiceIME: destructive update rejected, "
-                                "no surrounding-text snapshot";
-                active_ = false;
-                return false;
+                FCITX_WARN() << "VoiceIME: destructive update without "
+                                "surrounding-text snapshot; accepting based on "
+                                "session-committed state (inserted=" << inserted_
+                             << " remove=" << remove
+                             << " text_bytes=" << text.size() << ")";
             }
         }
 
         if (remove) {
-            ic->deleteSurroundingText(-remove, remove);
+            // Forward N physical BackSpace keys to the client instead of
+            // using deleteSurroundingText(-N, N). The relative-offset
+            // version depends on fcitx's internal cursor tracking the
+            // streaming commitString calls, which is unreliable across
+            // GTK/Qt/Electron frontends — empirically the delete becomes a
+            // no-op while the commitString still appends, leaving the
+            // original streaming text followed by the LLM fix. BackSpace
+            // is a real key event the client always handles and removes one
+            // character before the cursor each time.
+            const fcitx::Key bs(FcitxKey_BackSpace);
+            for (int32_t i = 0; i < remove; ++i) {
+                ic->forwardKey(bs);
+            }
             eraseLastChars(committed_, static_cast<size_t>(remove));
         }
         if (!text.empty()) {

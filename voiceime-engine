@@ -172,11 +172,34 @@ class TextReconciler:
 
     @staticmethod
     def patch(old: str, new: str) -> tuple[int, str]:
+        # Common prefix.
         n = min(len(old), len(new))
         i = 0
         while i < n and old[i] == new[i]:
             i += 1
-        return len(old) - i, new[i:]
+        # Common suffix, but only over non-whitespace tails. Whitespace at
+        # the edit boundary carries word-segmentation semantics (the
+        # original ASR output may have dropped/added a space between CJK
+        # and Latin tokens) so matching a whitespace suffix would erase a
+        # real, intentional difference. Stop the suffix walk at the first
+        # whitespace on either side and also at i so the prefix/suffix
+        # regions never overlap.
+        j_old, j_new = len(old), len(new)
+        while (
+            j_old > i
+            and j_new > i
+            and not old[j_old - 1].isspace()
+            and not new[j_new - 1].isspace()
+            and old[j_old - 1] == new[j_new - 1]
+        ):
+            j_old -= 1
+            j_new -= 1
+        # Delete the differing middle of `old`, then append the differing
+        # middle of `new`. The native bridge rejects very large destructive
+        # updates because they cannot be proven safe — keep the patch tight
+        # so LLM middle-of-string fixes (e.g. "不是 l l m X" -> "不是 LLM X")
+        # actually land instead of looking like "delete everything and retype".
+        return j_old - i, new[i:j_new]
 
     def emit(self, text: str, *, force: bool = False) -> bool:
         text = text.strip()
@@ -357,14 +380,27 @@ class LLMCorrector:
         if not text or not text.strip():
             self.last_status = "unchanged"
             return text
+        # EMERGENCY KILL SWITCH: the late-refinement rewrite path is broken
+        # on the user's machine — deleteSurroundingText and forwardKey BS
+        # both leave the streaming text in place and the LLM fix gets
+        # appended after it. Gated by VOICEIME_LLM_DISABLED so unit tests
+        # can keep exercising the corrector. Set this in systemd env to
+        # ship ASR text straight to the input box with no LLM rewrite.
+        if os.environ.get("VOICEIME_LLM_DISABLED", "0") == "1":
+            self.last_status = "disabled"
+            log("LLM corrector force-disabled (VOICEIME_LLM_DISABLED=1); "
+                "returning ASR text as-is")
+            return text
         if not self._available:
             self.last_status = "failed"
+            log(f"LLM skip: corrector unavailable (api_key_set={bool(self.api_key)} base_url={self.base_url})")
             return text
         prompt = (
             self.REWRITE_PROMPT
             if self.mode in ("rewrite", "aggressive")
             else self.SYSTEM_PROMPT
         )
+        log(f"LLM call: mode={self.mode} model={self.model} base_chars={len(text)} base_preview={text[:60]!r}")
         body = json.dumps({
             "model": self.model,
             "messages": [{
@@ -392,6 +428,7 @@ class LLMCorrector:
                 for item in payload["content"]
                 if item.get("type") == "text"
             ).strip()
+            log(f"LLM response: chars={len(content)} preview={content[:80]!r}")
         except (TimeoutError,) as ex:
             self.last_status = "timeout"
             log(f"LLM correction timed out: {ex!r}")
@@ -408,12 +445,15 @@ class LLMCorrector:
             return text
         if not content:
             self.last_status = "failed"
+            log("LLM correction failed: empty content from API")
             return text
         if not self._accept_candidate(text, content):
             self.last_status = "rejected"
-            log("LLM candidate rejected by semantic guard")
+            log(f"LLM candidate rejected by semantic guard (mode={self.mode}); "
+                f"base={text[:80]!r} candidate={content[:80]!r}")
             return text
         self.last_status = "success"
+        log(f"LLM accepted: {len(text)}->{len(content)} chars (mode={self.mode})")
         return content
 
 
@@ -584,6 +624,16 @@ def refine_async(
         return
 
     llm_enabled = getattr(llm, "enabled", True)
+    # EMERGENCY: late-refinement delete/append is broken on this host.
+    # Skip the entire LLM block and the bridge patch path; the streaming
+    # ASR text was already committed character-by-character during
+    # recording, so the input box already holds the correct text.
+    # Gated by VOICEIME_LLM_DISABLED so unit tests can keep exercising
+    # the refinement pipeline. Service unit sets it to 1 by default.
+    if llm_enabled and os.environ.get("VOICEIME_LLM_DISABLED", "0") == "1":
+        log("refine_async: LLM refinement skipped (VOICEIME_LLM_DISABLED=1); "
+            "streaming ASR text already committed; no bridge rewrite")
+        return
     if llm_enabled:
         set_correction_state(session, "correcting")
         try:
@@ -605,21 +655,27 @@ def refine_async(
             set_correction_state(session, "success")
 
     if session != current_session or final == base_text:
+        if final == base_text:
+            log(f"refine_async: final == base_text (len={len(base_text)}); no bridge call needed")
         return
 
     remove, append = TextReconciler.patch(base_text, final)
+    log(f"refine_async: bridge call session={session[:8]} remove={remove} append_chars={len(append)} "
+        f"base_preview={base_text[:60]!r} final_preview={final[:60]!r} llm_status={getattr(llm, 'last_status', '?')}")
     try:
         bridge = FcitxBridge()
-        if not bridge.update(session, remove, append):
-            log("late refinement rejected: session/range changed")
+        ok = bridge.update(session, remove, append)
+        if not ok:
+            log(f"refine_async: bridge refused update (remove={remove} append_chars={len(append)}); "
+                f"see native bridge FCITX_WARN logs for which guard failed")
             if llm_enabled:
                 set_correction_state(session, "failed")
         else:
-            log(f"late refinement applied chars={len(base_text)}->{len(final)}")
+            log(f"refine_async: bridge accepted; committed remove={remove} append_chars={len(append)}")
             if llm_enabled:
                 set_correction_state(session, "success")
     except Exception as ex:
-        log(f"late refinement delivery failed: {ex!r}")
+        log(f"refine_async: bridge delivery exception: {ex!r}")
         if llm_enabled:
             set_correction_state(session, "failed")
 

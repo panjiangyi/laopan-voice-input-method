@@ -23,7 +23,21 @@ class ReconcilerTests(unittest.TestCase):
         patch_fn = ENGINE["TextReconciler"].patch
         self.assertEqual(patch_fn("你好测式", "你好测试"), (1, "试"))
         self.assertEqual(patch_fn("hello wor", "hello world"), (0, "ld"))
-        self.assertEqual(patch_fn("今天review", "今天 review"), (6, " review"))
+        # Suffix walk stops at whitespace boundaries, so a space inserted
+        # between CJK and Latin yields a pure-append insert, not a rewrite.
+        self.assertEqual(patch_fn("今天review", "今天 review"), (0, " "))
+        # Mid-string LLM-style rewrite: keep the (small) prefix and suffix,
+        # only delete the mismatched middle so the native bridge accepts it.
+        self.assertEqual(
+            patch_fn("不是 l l m 浮现失败是 a s i 模型本身就有问",
+                     "不是 LLM 浮现失败，是 ASI 模型本身就有问题"),
+            (25, "LLM 浮现失败，是 ASI 模型本身就有问题"),
+        )
+        # Pure CJK middle edit keeps the prefix/suffix windows narrow.
+        self.assertEqual(
+            patch_fn("今天写作和编程", "今天协作和编程"),
+            (1, "协"),
+        )
 
     def test_force_final_correction_uses_session(self):
         cls = ENGINE["TextReconciler"]

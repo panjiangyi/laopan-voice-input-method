@@ -8,6 +8,13 @@ LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+# Late-refinement rewrite is currently broken on this host (delete /
+# append leaves the streaming text in place and appends the LLM fix
+# after it). Default to disabled so the streaming ASR text already
+# committed to the IC is what the user sees. Set
+# VOICEIME_LLM_DISABLED=0 to re-enable once a working rewrite path
+# is shipped.
+LLM_DISABLED="${VOICEIME_LLM_DISABLED:-1}"
 
 cat > "$UNIT_DIR/voiceime-ptt.service" <<EOF
 [Unit]
@@ -26,6 +33,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=VOICEIME_ENGINE=sherpa
 Environment=VOICEIME_FINAL_ENABLED=0
 Environment=VOICEIME_LLM_ENABLED=$LLM_ENABLED
+Environment=VOICEIME_LLM_DISABLED=$LLM_DISABLED
 Environment=VOICEIME_LLM_MODE=$LLM_MODE
 Environment=VOICEIME_LLM_TIMEOUT=$LLM_TIMEOUT
 Environment=DEEPSEEK_MODEL=$DEEPSEEK_MODEL
