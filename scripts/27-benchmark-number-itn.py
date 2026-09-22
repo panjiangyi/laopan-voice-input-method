@@ -34,12 +34,12 @@ PUNCT = (
     / "model.int8.onnx"
 )
 SAMPLE_RATE = 16000
-NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_])[+-]?\\d+(?:\\.\\d+)*(?![A-Za-z0-9_])")
+NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_])[+-]?\d+(?:\.\d+)*(?![A-Za-z0-9_])")
 CODE_RE = re.compile(
-    r"(?:\\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\\b)"
-    r"|(?:\\b[A-Z][A-Z0-9_]{2,}\\b)"
-    r"|(?:\\b[A-Za-z][A-Za-z0-9]*(?:[.+:/-][A-Za-z0-9+._:/-]+)+\\b)"
-    r"|(?:\\bC\\+\\+\\b)"
+    r"(?:\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b)"
+    r"|(?:\b[A-Z][A-Z0-9_]{2,}\b)"
+    r"|(?:\b[A-Za-z][A-Za-z0-9]*(?:[.+:/-][A-Za-z0-9+._:/-]+)+\b)"
+    r"|(?:\bC\+\+\b)"
 )
 
 
