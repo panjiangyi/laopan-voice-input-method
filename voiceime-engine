@@ -29,6 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
+from voiceime_glossary import GlossaryCorrector
+
 ROOT = Path(__file__).resolve().parent
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 MODEL_DIR = Path(os.environ.get(
@@ -684,6 +686,7 @@ def run_utterance(
     asr: SherpaRecognizer,
     final_asr: FinalRecognizer,
     llm: LLMCorrector,
+    glossary: GlossaryCorrector,
     bridge: FcitxBridge,
     executor: ThreadPoolExecutor,
     request_id: int,
@@ -725,7 +728,7 @@ def run_utterance(
                     all_audio.extend(data)
                     asr.accept_pcm(stream, data)
                     asr.decode_ready(stream)
-                    text = asr.text(stream)
+                    text = glossary.correct(asr.text(stream))
                     if text and not reconciler.emit(text):
                         log("Fcitx session invalidated; ending utterance")
                         break
@@ -744,7 +747,7 @@ def run_utterance(
         try:
             streaming_final = asr.finalize(stream).strip()
             if streaming_final:
-                base_text = streaming_final
+                base_text = glossary.correct(streaming_final)
         except Exception as ex:
             log(f"streaming finalize failed; keeping last partial: {ex!r}")
 
@@ -787,6 +790,7 @@ def main() -> int:
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
     llm = LLMCorrector()
+    glossary = GlossaryCorrector()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceime-final")
 
     READY_FILE.write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -803,7 +807,7 @@ def main() -> int:
             handled_request += 1
             try:
                 run_utterance(
-                    asr, final_asr, llm, bridge, executor, handled_request
+                    asr, final_asr, llm, glossary, bridge, executor, handled_request
                 )
             except Exception as ex:
                 set_state("suspended")
