@@ -16,20 +16,22 @@ die()  { printf 'build-and-start: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "do not run as root; the daemon runs as your user"
 
-# Interactive setup defaults to AI enabled and punctuation mode on Enter.
-# Environment overrides remain available for non-interactive deployments.
-LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
+# Collect all correction choices in one place. Environment variables remain
+# the non-interactive interface for automation; a terminal gets friendly
+# prompts with conservative defaults. The preedit pipeline does punctuation
+# locally, so legacy AI correction stays off unless explicitly requested.
+LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 
 if [ -t 0 ]; then
-  step "Configure AI correction"
-  printf '%s\n' 'AI punctuation adds commas and question marks; disabling it leaves only a fallback full stop.'
-  read -r -p "Enable AI punctuation / correction after each utterance? [Y/n] " answer
-  case "${answer:-Y}" in
-    [Nn]*) LLM_ENABLED=0 ;;
-    *) LLM_ENABLED=1 ;;
+  step "Configure optional legacy AI correction"
+  printf '%s\n' 'Preedit mode already adds local punctuation; legacy AI is only for experimenting with the old rewrite path.'
+  read -r -p "Enable legacy AI correction after each utterance? [y/N] " answer
+  case "${answer:-N}" in
+    [Yy]*) LLM_ENABLED=1 ;;
+    *) LLM_ENABLED=0 ;;
   esac
 
   if [ "$LLM_ENABLED" = 1 ]; then
@@ -62,12 +64,18 @@ export VOICEIME_LLM_MODE="$LLM_MODE"
 export VOICEIME_LLM_TIMEOUT="$LLM_TIMEOUT"
 export DEEPSEEK_MODEL
 
-# 0. Make sure the project scripts are executable (a fresh checkout often
+# 0. Install anything needed by the production pipeline. The setup script is
+#    intentionally idempotent: installed apt packages, Python modules, and
+#    complete model directories are detected and skipped.
+step "Ensure system, Python, and model dependencies"
+bash "$ROOT/scripts/09-setup-sherpa.sh"
+
+# 1. Make sure the project scripts are executable (a fresh checkout often
 #    loses +x, and 10-install-service.sh also resets these bits).
 step "Refresh executable bits"
 chmod +x "$ROOT"/voiceime-* "$ROOT"/native/*.sh "$ROOT"/scripts/*.sh
 
-# 1. Stop whatever is currently running.
+# 2. Stop whatever is currently running.
 step "Stop existing daemon / instances"
 if [ -x "$ROOT/voiceime-reset" ]; then
   "$ROOT/voiceime-reset" || true
@@ -80,7 +88,7 @@ pkill -u "$(id -u)" -x parec                    2>/dev/null || true
 pkill -u "$(id -u)" -f "$ROOT/voiceime-engine"  2>/dev/null || true
 pkill -u "$(id -u)" -f "$ROOT/voiceime-ptt"     2>/dev/null || true
 
-# 2. Rebuild the Fcitx5 native bridge.
+# 3. Rebuild the Fcitx5 native bridge.
 step "Rebuild Fcitx5 addon (native/ → build/libvoiceime.so)"
 command -v g++ >/dev/null || die "g++ not installed"
 command -v fcitx5 >/dev/null || die "fcitx5 not installed"
@@ -133,17 +141,26 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 
-# 3. Sanity-check the Sherpa backend; warn (don't fail) if first-time setup
-#    is still needed. Without it the daemon will start but dictate nothing.
-step "Verify Sherpa streaming backend"
+# 4. Verify streaming + final quality models. Missing quality models are safe:
+#    VoiceIME falls back to streaming text, but the user should know they are
+#    not actually testing the new final pipeline.
+step "Verify production ASR models"
 SHERPA_MODEL="$ROOT/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en"
+FINAL_MODEL="$ROOT/models/sherpa-onnx-paraformer-zh-2024-03-09"
+PUNCT_MODEL="$ROOT/models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
 if [ ! -f "$SHERPA_MODEL/tokens.txt" ]; then
-  printf '\nWARNING: Sherpa bilingual model not found at %s\n' "$SHERPA_MODEL"
-  printf 'First-time setup needed; run once:\n  bash scripts/09-setup-sherpa.sh\n\n'
+  printf '\nWARNING: streaming Paraformer missing at %s\n' "$SHERPA_MODEL"
+  printf 'Run once:\n  bash scripts/09-setup-sherpa.sh\n\n'
+fi
+if [ ! -f "$FINAL_MODEL/model.int8.onnx" ] || [ ! -f "$PUNCT_MODEL/model.int8.onnx" ]; then
+  printf '\nWARNING: final quality models are incomplete.\n'
+  printf 'To test PR #6 fully, run:\n  bash scripts/11-setup-quality.sh\n\n'
+else
+  printf '  ✓ streaming + offline final + punctuation models ready\n'
 fi
 
-# 3b. DeepSeek is called directly by voiceime-engine; retire the old wrapper.
-step "Configure DeepSeek correction"
+# 4b. DeepSeek is legacy/optional in the preedit pipeline.
+step "Configure optional DeepSeek correction"
 systemctl --user disable --now voiceime-corrector.service 2>/dev/null || true
 if [ "$LLM_ENABLED" = 1 ]; then
   [ -s "$ROOT/.env" ] || die "AI correction enabled but $ROOT/.env is missing"
@@ -154,18 +171,18 @@ else
   printf '  AI correction disabled\n'
 fi
 
-# 4. Refresh the systemd user unit (idempotent; picks up any new ExecStart
+# 5. Refresh the systemd user unit (idempotent; picks up any new ExecStart
 #    or Environment= changes from this checkout).
 step "Refresh systemd user unit"
 bash "$ROOT/scripts/10-install-service.sh"
 systemctl --user daemon-reload
 
-# 5. Start the daemon.
+# 6. Start the daemon.
 step "Start voiceime-ptt"
 systemctl --user enable --now voiceime-ptt.service
 systemctl --user enable --now voiceime-overlay.service
 
-# 6. Wait until the daemon is actually idle (suspended = loaded and ready
+# 7. Wait until the daemon is actually idle (suspended = loaded and ready
 #    for PTT) instead of declaring victory on "active" alone.
 printf 'Waiting for daemon to reach idle... '
 state=""

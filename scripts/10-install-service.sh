@@ -4,13 +4,18 @@ ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$UNIT_DIR"
 
-LLM_ENABLED="${VOICEIME_LLM_ENABLED:-1}"
+LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
 LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 # Emergency operator kill switch. The normal path is safe now: streaming text
 # stays in Fcitx preedit and FinishSession commits the corrected sentence once.
 LLM_DISABLED="${VOICEIME_LLM_DISABLED:-0}"
+OUTPUT_MODE="${VOICEIME_OUTPUT_MODE:-preedit}"
+FINAL_ENABLED="${VOICEIME_FINAL_ENABLED:-1}"
+FINAL_MAX_WAIT="${VOICEIME_FINAL_MAX_WAIT:-1.2}"
+FINAL_MAX_AUDIO="${VOICEIME_FINAL_MAX_AUDIO_SEC:-10.0}"
+PUNCTUATION_ENABLED="${VOICEIME_PUNCTUATION_ENABLED:-1}"
 
 cat > "$UNIT_DIR/voiceime-ptt.service" <<EOF
 [Unit]
@@ -30,7 +35,11 @@ Restart=on-failure
 RestartSec=1
 Environment=PYTHONUNBUFFERED=1
 Environment=VOICEIME_ENGINE=sherpa
-Environment=VOICEIME_FINAL_ENABLED=0
+Environment=VOICEIME_OUTPUT_MODE=$OUTPUT_MODE
+Environment=VOICEIME_FINAL_ENABLED=$FINAL_ENABLED
+Environment=VOICEIME_FINAL_MAX_WAIT=$FINAL_MAX_WAIT
+Environment=VOICEIME_FINAL_MAX_AUDIO_SEC=$FINAL_MAX_AUDIO
+Environment=VOICEIME_PUNCTUATION_ENABLED=$PUNCTUATION_ENABLED
 Environment=VOICEIME_LLM_ENABLED=$LLM_ENABLED
 Environment=VOICEIME_LLM_DISABLED=$LLM_DISABLED
 Environment=VOICEIME_LLM_MODE=$LLM_MODE
@@ -61,7 +70,7 @@ Environment=DISPLAY=${DISPLAY:-:1}
 WantedBy=default.target
 EOF
 
-chmod +x "$ROOT/voiceime-engine" "$ROOT/voiceime-ptt" "$ROOT/voiceime-reset" "$ROOT/voiceime-mic" "$ROOT/voiceime-overlay" "$ROOT/scripts/wait-for-x11.sh"
+chmod +x "$ROOT/voiceime-engine" "$ROOT/voiceime-ptt" "$ROOT/voiceime-reset" "$ROOT/voiceime-mic" "$ROOT/voiceime-overlay" "$ROOT/voiceime-hotwords" "$ROOT/scripts/wait-for-x11.sh"
 systemctl --user daemon-reload
 systemctl --user enable voiceime-ptt.service
 systemctl --user enable voiceime-overlay.service

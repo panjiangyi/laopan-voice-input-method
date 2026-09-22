@@ -29,6 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
+from voiceime_glossary import GlossaryCorrector
+
 ROOT = Path(__file__).resolve().parent
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 MODEL_DIR = Path(os.environ.get(
@@ -45,6 +47,9 @@ FINAL_PADDING_SEC = float(os.environ.get("VOICEIME_FINAL_PADDING_SEC", "1.0"))
 RELEASE_GRACE_SEC = max(0.0, min(1.0, float(os.environ.get(
     "VOICEIME_RELEASE_GRACE_SEC", "0.35"
 ))))
+OUTPUT_MODE = os.environ.get("VOICEIME_OUTPUT_MODE", "preedit").strip().lower()
+FINAL_MAX_WAIT_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_WAIT", "1.2"))
+FINAL_MAX_AUDIO_SEC = float(os.environ.get("VOICEIME_FINAL_MAX_AUDIO_SEC", "10.0"))
 MIC_SCRIPT = ROOT / "voiceime-mic"
 LOCK = RUNTIME / "voiceime-engine.lock"
 STATE_FILE = RUNTIME / "voiceime-engine.state"
@@ -58,6 +63,7 @@ terminate = False
 start_request = 0
 stop_request = 0
 current_session = ""
+final_inflight = None
 
 
 def load_project_env() -> None:
@@ -186,6 +192,54 @@ class FcitxBridge:
         )
         return out.returncode == 0 and out.stdout.strip() == "b true"
 
+    def preview(self, session: str, text: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "PreviewSession", GLib.Variant("(ss)", (session, text))
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "PreviewSession", "ss", session, text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
+    def commit(self, session: str, text: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "CommitSession", GLib.Variant("(ss)", (session, text))
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "CommitSession", "ss", session, text,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
+    def cancel(self, session: str) -> bool:
+        if self._bus is not None and self._gio is not None:
+            _Gio, GLib = self._gio
+            return self._gio_call(
+                "CancelSession", GLib.Variant("(s)", (session,))
+            )
+        out = subprocess.run(
+            [
+                "busctl", "--user", "--timeout=1", "call",
+                "org.voiceime.Input", "/org/voiceime/Input",
+                "org.voiceime.Input1", "CancelSession", "s", session,
+            ],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "b true"
+
 
 class TextReconciler:
     def __init__(self, bridge: FcitxBridge, session: str) -> None:
@@ -220,33 +274,58 @@ class TextReconciler:
         return True
 
 
+class PreeditPresenter:
+    """Throttle live ASR previews without writing them into the document."""
+
+    def __init__(self, bridge: FcitxBridge, session: str) -> None:
+        self.bridge = bridge
+        self.session = session
+        self.current = ""
+        self.last_emit = 0.0
+
+    def emit(self, text: str, *, force: bool = False) -> bool:
+        text = text.strip()
+        if text == self.current:
+            return True
+        now = time.monotonic()
+        if not force and now - self.last_emit < PARTIAL_MIN_INTERVAL:
+            return True
+        if not self.bridge.preview(self.session, text):
+            return False
+        self.current = text
+        self.last_emit = now
+        return True
+
+
 class FinalRecognizer:
-    """Optional high-accuracy second pass using FireRedASR2 CTC."""
+    """Fast high-accuracy final pass using offline Paraformer large."""
 
     def __init__(self) -> None:
         self.recognizer = None
-        if os.environ.get("VOICEIME_FINAL_ENABLED", "0").lower() not in {
+        self.enabled = os.environ.get("VOICEIME_FINAL_ENABLED", "1").lower() in {
             "1", "true", "yes", "on"
-        }:
-            log("final ASR disabled; set VOICEIME_FINAL_ENABLED=1 to test it")
+        }
+        if not self.enabled:
+            log("final ASR disabled")
             return
+
         model_dir = Path(os.environ.get(
             "VOICEIME_FINAL_MODEL",
-            ROOT / "models" / "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",
+            ROOT / "models" / "sherpa-onnx-paraformer-zh-2024-03-09",
         ))
         model = model_dir / "model.int8.onnx"
         tokens = model_dir / "tokens.txt"
         if not model.exists() or not tokens.exists():
-            log("final ASR model not installed; streaming result will be used")
+            log("offline Paraformer final model not installed; streaming result will be used")
             return
         try:
             import sherpa_onnx
-            self.recognizer = sherpa_onnx.OfflineRecognizer.from_fire_red_asr_ctc(
-                model=str(model),
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                paraformer=str(model),
                 tokens=str(tokens),
                 num_threads=max(1, min(4, (os.cpu_count() or 2) // 2)),
             )
-            log(f"loaded final FireRedASR2 model from {model_dir}")
+            log(f"loaded offline Paraformer final model from {model_dir}")
         except Exception as ex:
             log(f"failed to load final ASR model: {ex!r}")
             self.recognizer = None
@@ -262,6 +341,58 @@ class FinalRecognizer:
         self.recognizer.decode_stream(stream)
         result = stream.result
         return (result.text if hasattr(result, "text") else str(result)).strip()
+
+
+class PunctuationRestorer:
+    """Fast local punctuation restoration with a semantic fail-closed guard."""
+
+    def __init__(self) -> None:
+        self.restorer = None
+        self.enabled = os.environ.get(
+            "VOICEIME_PUNCTUATION_ENABLED", "1"
+        ).lower() in {"1", "true", "yes", "on"}
+        if not self.enabled:
+            return
+        model_dir = Path(os.environ.get(
+            "VOICEIME_PUNCTUATION_MODEL",
+            ROOT / "models"
+            / "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8",
+        ))
+        model = model_dir / "model.int8.onnx"
+        if not model.exists():
+            log("punctuation model not installed; punctuation restoration disabled")
+            return
+        try:
+            import sherpa_onnx
+            config = sherpa_onnx.OfflinePunctuationConfig(
+                model=sherpa_onnx.OfflinePunctuationModelConfig(
+                    ct_transformer=str(model),
+                    num_threads=1,
+                    provider="cpu",
+                )
+            )
+            self.restorer = sherpa_onnx.OfflinePunctuation(config)
+            log(f"loaded punctuation model from {model_dir}")
+        except Exception as ex:
+            log(f"failed to load punctuation model: {ex!r}")
+            self.restorer = None
+
+    def correct(self, text: str) -> str:
+        if not text or self.restorer is None:
+            return text
+        try:
+            candidate = self.restorer.add_punctuation(text).strip()
+        except Exception as ex:
+            log(f"punctuation restoration failed: {ex!r}")
+            return text
+        if not candidate:
+            return text
+        if LLMCorrector._semantic_signature(text) != LLMCorrector._semantic_signature(
+            candidate
+        ):
+            log("punctuation candidate rejected by semantic guard")
+            return text
+        return candidate
 
 
 class LLMCorrector:
@@ -689,10 +820,81 @@ def refine_async(
             set_correction_state(session, "failed")
 
 
+def _best_final_text(
+    session: str,
+    request_id: int,
+    streaming_text: str,
+    pcm: bytes,
+    final_asr: FinalRecognizer,
+    glossary: GlossaryCorrector,
+    punctuation: PunctuationRestorer,
+    executor: ThreadPoolExecutor,
+) -> str:
+    """Return a bounded-latency final candidate without queueing heavy work."""
+    global current_session, start_request, final_inflight
+    candidate = streaming_text
+    audio_sec = len(pcm) / float(SAMPLE_RATE * 2) if pcm else 0.0
+
+    can_run_final = (
+        final_asr.recognizer is not None
+        and pcm
+        and start_request <= request_id
+        and audio_sec <= max(0.0, FINAL_MAX_AUDIO_SEC)
+    )
+
+    if final_inflight is not None and final_inflight.done():
+        try:
+            final_inflight.result()
+        except Exception as ex:
+            log(f"previous final ASR finished with error: {ex!r}")
+        final_inflight = None
+
+    if can_run_final and final_inflight is not None:
+        log("final ASR still busy; using streaming result")
+        can_run_final = False
+
+    if can_run_final:
+        set_state("finalizing")
+        future = executor.submit(final_asr.transcribe, pcm)
+        final_inflight = future
+        deadline = time.monotonic() + max(0.0, FINAL_MAX_WAIT_SEC)
+        while not future.done() and time.monotonic() < deadline:
+            if session != current_session or start_request > request_id:
+                log("new utterance queued; stop waiting for final ASR")
+                break
+            time.sleep(0.01)
+
+        if future.done():
+            final_inflight = None
+            try:
+                refined = future.result()
+                if refined:
+                    candidate = refined
+            except Exception as ex:
+                log(f"final ASR failed; keeping streaming result: {ex!r}")
+        else:
+            future.cancel()
+            log(
+                f"final ASR exceeded {FINAL_MAX_WAIT_SEC:.2f}s or was superseded; "
+                "keeping streaming result"
+            )
+    elif audio_sec > FINAL_MAX_AUDIO_SEC:
+        log(
+            f"utterance {audio_sec:.2f}s exceeds final-pass limit "
+            f"{FINAL_MAX_AUDIO_SEC:.2f}s; using streaming result"
+        )
+
+    candidate = glossary.correct(candidate)
+    punctuated = punctuation.correct(candidate)
+    return punctuated or streaming_text
+
+
 def run_utterance(
     asr: SherpaRecognizer,
     final_asr: FinalRecognizer,
     llm: LLMCorrector,
+    glossary: GlossaryCorrector,
+    punctuation: PunctuationRestorer,
     bridge: FcitxBridge,
     executor: ThreadPoolExecutor,
     request_id: int,
@@ -706,7 +908,12 @@ def run_utterance(
         log("no focused Fcitx input context or native bridge is outdated")
         return
 
-    reconciler = TextReconciler(bridge, session)
+    use_preedit = OUTPUT_MODE == "preedit"
+    presenter = (
+        PreeditPresenter(bridge, session)
+        if use_preedit
+        else TextReconciler(bridge, session)
+    )
     stream = asr.create_stream()
     recorder = start_recorder(resolve_mic())
     assert recorder.stdout is not None
@@ -718,8 +925,9 @@ def run_utterance(
     started = time.monotonic()
     all_audio = bytearray()
     set_state("recording")
-    log(f"recording session={session[:8]}")
+    log(f"recording session={session[:8]} output={OUTPUT_MODE}")
     release_deadline = None
+    target_valid = True
     try:
         while not terminate:
             if stop_request >= request_id:
@@ -742,9 +950,10 @@ def run_utterance(
                     all_audio.extend(data)
                     asr.accept_pcm(stream, data)
                     asr.decode_ready(stream)
-                    text = asr.text(stream)
-                    if text and not reconciler.emit(text):
+                    text = glossary.correct(asr.text(stream))
+                    if text and not presenter.emit(text):
                         log("Fcitx session invalidated; ending utterance")
+                        target_valid = False
                         break
             if recorder.poll() is not None:
                 log("recorder exited unexpectedly")
@@ -757,22 +966,45 @@ def run_utterance(
 
         # Put the streaming final result in replaceable preedit synchronously.
         # It stays visible while FireRed/LLM refinement runs.
-        base_text = reconciler.current
+        base_text = presenter.current
         try:
             streaming_final = asr.finalize(stream).strip()
             if streaming_final:
-                base_text = streaming_final
+                base_text = glossary.correct(streaming_final)
         except Exception as ex:
             log(f"streaming finalize failed; keeping last partial: {ex!r}")
 
-        if base_text and base_text != reconciler.current:
-            if not reconciler.emit(base_text, force=True):
-                log("streaming final rejected because target changed")
-                base_text = reconciler.current
+        if base_text and base_text != presenter.current:
+            if not presenter.emit(base_text, force=True):
+                log("streaming final preview rejected because target changed")
+                target_valid = False
+                base_text = presenter.current
+
+        if use_preedit:
+            if target_valid and base_text:
+                final_text = _best_final_text(
+                    session,
+                    request_id,
+                    base_text,
+                    bytes(all_audio),
+                    final_asr,
+                    glossary,
+                    punctuation,
+                    executor,
+                )
+                if final_text != presenter.current:
+                    presenter.emit(final_text, force=True)
+                if not bridge.commit(session, final_text):
+                    log("one-shot final commit rejected because target changed")
+                    bridge.cancel(session)
+            else:
+                bridge.cancel(session)
+            set_state("suspended")
+            return
 
         set_state("suspended")
 
-        if base_text:
+        if base_text and all_audio:
             # Do not block PTT on FireRed/LLM. One worker serializes the heavy
             # second pass; stale queued jobs self-cancel via current_session.
             executor.submit(
@@ -808,6 +1040,8 @@ def main() -> int:
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
     llm = LLMCorrector()
+    glossary = GlossaryCorrector()
+    punctuation = PunctuationRestorer()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceime-final")
 
     READY_FILE.write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -824,7 +1058,8 @@ def main() -> int:
             handled_request += 1
             try:
                 run_utterance(
-                    asr, final_asr, llm, bridge, executor, handled_request
+                    asr, final_asr, llm, glossary, punctuation,
+                    bridge, executor, handled_request
                 )
             except Exception as ex:
                 set_state("suspended")

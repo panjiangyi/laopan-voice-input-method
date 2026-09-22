@@ -1,0 +1,576 @@
+# Common programming / frontend / backend / DevOps vocabulary.
+# One phrase per line. Keep canonical spelling here; spoken aliases belong in
+# future decoder-specific compilation, not as blind text replacements.
+
+Git
+GitHub
+GitHub Actions
+GitLab
+Bitbucket
+repo
+repository
+branch
+main
+master
+commit
+push
+pull
+fetch
+clone
+fork
+merge
+rebase
+cherry-pick
+squash
+stash
+tag
+diff
+conflict
+merge conflict
+pull request
+PR
+code review
+workflow
+runner
+release
+issue
+milestone
+checkout
+HEAD
+
+code
+coding
+vibe coding
+AI agent
+agentic AI
+agentic coding
+coding agent
+agentic workflow
+agent loop
+agent orchestration
+multi-agent
+subagent
+tool call
+tool calling
+function calling
+structured output
+system prompt
+user prompt
+prompt engineering
+context engineering
+context window
+context compression
+context compaction
+token
+token budget
+inference
+reasoning
+chain of thought
+human in the loop
+guardrail
+grounding
+hallucination
+eval
+evals
+benchmark
+LLM
+SLM
+multimodal
+vision language model
+VLM
+embedding
+embeddings
+vector database
+vector store
+semantic search
+reranking
+chunking
+RAG
+retrieval-augmented generation
+fine-tuning
+LoRA
+RLHF
+DPO
+distillation
+quantization
+Model Context Protocol
+MCP server
+MCP client
+A2A
+AG-UI
+OpenAI Agents SDK
+LangChain
+LangGraph
+CrewAI
+AutoGen
+GitHub Copilot
+Cursor
+Windsurf
+Cline
+Roo Code
+Aider
+OpenCode
+Devin
+Manus
+bug
+issue
+feature
+fix
+hotfix
+refactor
+review
+test
+unit test
+integration test
+end-to-end
+E2E
+debug
+debugger
+breakpoint
+log
+error
+warning
+exception
+stack trace
+crash
+timeout
+retry
+fallback
+edge case
+regression
+performance
+latency
+memory
+CPU
+GPU
+thread
+process
+async
+await
+concurrency
+parallel
+callback
+hook
+event
+handler
+
+frontend
+backend
+full stack
+JavaScript
+JS
+TypeScript
+TS
+HTML
+CSS
+DOM
+browser
+Chrome
+Safari
+Firefox
+WebKit
+component
+props
+state
+context
+render
+rerender
+hydration
+form
+input
+button
+modal
+dialog
+dropdown
+tooltip
+sidebar
+navbar
+layout
+React
+React DOM
+Next.js
+Next
+Vue
+Vue.js
+Nuxt
+Angular
+Svelte
+useState
+useEffect
+useMemo
+useCallback
+server component
+client component
+React Server Components
+RSC
+router
+route
+middleware
+
+Node.js
+Node
+npm
+pnpm
+yarn
+package.json
+dependency
+dev dependency
+node_modules
+bundler
+bundle
+build
+compile
+transpile
+Babel
+Vite
+webpack
+esbuild
+Rollup
+source map
+tree shaking
+code splitting
+lazy loading
+dynamic import
+
+HTTP
+HTTPS
+request
+response
+header
+body
+query
+query string
+URL
+URI
+endpoint
+API
+REST
+REST API
+RESTful
+GraphQL
+WebSocket
+SSE
+cookie
+session
+token
+bearer token
+CORS
+origin
+preflight
+cache
+CDN
+redirect
+status code
+webhook
+polling
+long polling
+RPC
+gRPC
+protobuf
+JSON
+XML
+YAML
+serialization
+deserialization
+
+server
+client
+service
+microservice
+controller
+payload
+schema
+validation
+authentication
+authorization
+auth
+permission
+role
+OAuth
+OAuth 2
+JWT
+access token
+refresh token
+API key
+secret
+credential
+encryption
+hashing
+SSL
+TLS
+certificate
+CSRF
+XSS
+SQL injection
+
+Python
+Django
+Flask
+FastAPI
+Java
+Spring
+Spring Boot
+Kotlin
+Go
+Golang
+Rust
+Express
+NestJS
+Ruby
+Rails
+PHP
+Laravel
+Swift
+SwiftUI
+
+database
+DB
+SQL
+transaction
+table
+row
+column
+field
+index
+primary key
+foreign key
+constraint
+migration
+ORM
+join
+select
+insert
+update
+delete
+CRUD
+pagination
+cursor
+PostgreSQL
+Postgres
+MySQL
+SQLite
+Redis
+MongoDB
+DynamoDB
+Elasticsearch
+OpenSearch
+ClickHouse
+Supabase
+Firebase
+
+message queue
+queue
+worker
+job
+background job
+task
+event bus
+Kafka
+RabbitMQ
+SQS
+pub-sub
+publisher
+subscriber
+consumer
+producer
+
+Docker
+Dockerfile
+Docker Compose
+container
+image
+registry
+Docker Hub
+build context
+volume
+bind mount
+network
+port
+environment variable
+env
+entrypoint
+health check
+layer
+
+Kubernetes
+K8s
+kubectl
+cluster
+node
+Pod
+Deployment
+StatefulSet
+DaemonSet
+Service
+Ingress
+namespace
+ConfigMap
+Secret
+ReplicaSet
+replica
+persistent volume
+PVC
+Helm
+chart
+rollout
+restart
+scale
+
+Linux
+Ubuntu
+Debian
+shell
+bash
+zsh
+SSH
+SCP
+rsync
+systemd
+systemctl
+journalctl
+daemon
+PID
+signal
+kill
+socket
+file descriptor
+permission
+chmod
+chown
+sudo
+cron
+crontab
+
+TCP
+UDP
+IP
+IPv4
+IPv6
+DNS
+domain
+hostname
+localhost
+subnet
+gateway
+proxy
+reverse proxy
+VPN
+firewall
+NAT
+keep-alive
+load balancer
+Nginx
+upstream
+API gateway
+rate limit
+routing
+rewrite
+proxy pass
+SSL termination
+
+CI
+CD
+CI/CD
+pipeline
+deploy
+deployment
+staging
+production
+prod
+development
+dev
+environment
+artifact
+trigger
+rollback
+
+monitoring
+metrics
+logs
+tracing
+observability
+alert
+dashboard
+Prometheus
+Grafana
+Loki
+Datadog
+Sentry
+OpenTelemetry
+trace
+span
+outage
+incident
+downtime
+redeploy
+scale up
+scale down
+readiness
+liveness
+OOM
+out of memory
+memory leak
+CPU spike
+disk full
+
+AI
+LLM
+OpenAI
+ChatGPT
+GPT
+Claude
+Claude Code
+Codex
+Gemini
+DeepSeek
+prompt
+context
+embedding
+vector
+vector database
+RAG
+agent
+tool calling
+function calling
+MCP
+inference
+
+VS Code
+Visual Studio Code
+Cursor
+JetBrains
+IntelliJ
+WebStorm
+PyCharm
+Neovim
+Vim
+terminal
+console
+DevTools
+Chrome DevTools
+Postman
+Linear
+Jira
+Slack
+Notion
+
+# VoiceIME / speech-recognition terms observed in real user samples
+sherpa-onnx
+sherpa onnx
+Sherpa
+ONNX
+FireRedASR
+FireRedASR2
+Fcitx
+Fcitx5
+FinalRecognizer
+updateSession
+user_id
+VOICEIME_ENABLE_LLM
+VOICEIME_LLM_ENABLED
+endpoint triggered
+monitor source
+USB
+wav
+WAV
+systemd user service

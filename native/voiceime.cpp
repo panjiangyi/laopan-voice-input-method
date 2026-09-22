@@ -7,6 +7,7 @@
 #include <fcitx/instance.h>
 #include <fcitx/surroundingtext.h>
 #include <fcitx/text.h>
+#include <fcitx/userinterface.h>
 #include <fcitx-utils/dbus/bus.h>
 #include <fcitx-utils/dbus/objectvtable.h>
 #include <fcitx-utils/key.h>
@@ -89,11 +90,41 @@ public:
         return true;
     }
 
+    bool previewSession(const std::string &session, const std::string &text) {
+        if (!active_ || session.empty() || session != session_) {
+            return false;
+        }
+        return previewImpl(text);
+    }
+
+    bool commitSession(const std::string &session, const std::string &text) {
+        if (!active_ || session.empty() || session != session_) {
+            return false;
+        }
+        return commitImpl(text);
+    }
+
+    bool cancelSession(const std::string &session) {
+        if (!active_ || session.empty() || session != session_) {
+            return false;
+        }
+        auto *ic = currentInputContext();
+        if (ic) {
+            clearPreedit(ic);
+        }
+        active_ = false;
+        preview_.clear();
+        return true;
+    }
+
     FCITX_OBJECT_VTABLE_METHOD(begin, "Begin", "", "b");
     FCITX_OBJECT_VTABLE_METHOD(update, "Update", "is", "b");
     FCITX_OBJECT_VTABLE_METHOD(beginSession, "BeginSession", "s", "b");
     FCITX_OBJECT_VTABLE_METHOD(updateSession, "UpdateSession", "sis", "b");
     FCITX_OBJECT_VTABLE_METHOD(finishSession, "FinishSession", "ss", "b");
+    FCITX_OBJECT_VTABLE_METHOD(previewSession, "PreviewSession", "ss", "b");
+    FCITX_OBJECT_VTABLE_METHOD(commitSession, "CommitSession", "ss", "b");
+    FCITX_OBJECT_VTABLE_METHOD(cancelSession, "CancelSession", "s", "b");
 
 private:
     static size_t byteOffset(const std::string &text, size_t chars) {
@@ -143,9 +174,81 @@ private:
         ic->updatePreedit();
     }
 
+    fcitx::InputContext *currentInputContext() const {
+        auto *ic = instance_->inputContextManager().lastFocusedInputContext();
+        if (!active_ || !ic || !ic->hasFocus() || ic->uuid() != target_) {
+            return nullptr;
+        }
+        return ic;
+    }
+
     static void clearPreedit(fcitx::InputContext *ic) {
-        ic->inputPanel().setClientPreedit(fcitx::Text());
+        fcitx::Text empty;
+        ic->inputPanel().setClientPreedit(empty);
+        ic->inputPanel().setPreedit(empty);
         ic->updatePreedit();
+        ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+    }
+
+    bool previewImpl(const std::string &text) {
+        auto *ic = currentInputContext();
+        if (!ic) {
+            FCITX_WARN() << "VoiceIME: preview rejected, focus or session lost";
+            active_ = false;
+            return false;
+        }
+        if (text.size() > 65536 ||
+            (!text.empty() && !fcitx::utf8::validate(text))) {
+            FCITX_WARN() << "VoiceIME: preview rejected, invalid text";
+            return false;
+        }
+
+        fcitx::Text preedit;
+        preedit.append(text);
+        preedit.setCursor(fcitx::utf8::length(text));
+        if (ic->capabilityFlags().test(fcitx::CapabilityFlag::Preedit)) {
+            ic->inputPanel().setClientPreedit(preedit);
+            ic->inputPanel().setPreedit(fcitx::Text{});
+        } else {
+            ic->inputPanel().setClientPreedit(fcitx::Text{});
+            ic->inputPanel().setPreedit(preedit);
+        }
+        ic->updatePreedit();
+        ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+        preview_ = text;
+        return true;
+    }
+
+    bool commitImpl(const std::string &text) {
+        auto *ic = currentInputContext();
+        if (!ic) {
+            FCITX_WARN() << "VoiceIME: commit rejected, focus or session lost";
+            active_ = false;
+            return false;
+        }
+        if (text.size() > 65536 ||
+            (!text.empty() && !fcitx::utf8::validate(text))) {
+            FCITX_WARN() << "VoiceIME: commit rejected, invalid text";
+            return false;
+        }
+
+        if (snapshotValid_ && !snapshotMatches(ic)) {
+            FCITX_WARN() << "VoiceIME: commit rejected, target text/cursor changed";
+            clearPreedit(ic);
+            active_ = false;
+            preview_.clear();
+            return false;
+        }
+
+        clearPreedit(ic);
+        if (!text.empty()) {
+            ic->commitString(text);
+        }
+        committed_ = text;
+        inserted_ = fcitx::utf8::length(text);
+        preview_.clear();
+        active_ = false;
+        return true;
     }
 
     bool beginImpl(const std::string &session) {
@@ -169,6 +272,7 @@ private:
         target_ = active_ ? ic->uuid() : fcitx::ICUUID{};
         inserted_ = 0;
         committed_.clear();
+        preview_.clear();
         session_ = session;
         snapshotValid_ = false;
         before_.clear();
@@ -324,6 +428,7 @@ private:
     size_t inserted_ = 0;
     std::string session_;
     std::string committed_;
+    std::string preview_;
     bool snapshotValid_ = false;
     std::string before_;
     std::string after_;

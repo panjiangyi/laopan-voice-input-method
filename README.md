@@ -1,20 +1,25 @@
 # VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
-> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次识别（默认关闭）+
-> DeepSeek API 文本纠错（可选）+ Fcitx5 原生提交。
-> 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
+> PR #6 推荐架构：Sherpa 双语 streaming Paraformer 实时 preedit →
+> offline Paraformer large 快速 final → 领域词库确定性纠正 →
+> 本地安全标点 → Fcitx5 一次性 commit。
+> 旧 FireRed/LLM late-rewrite 路径保留兼容，不再作为默认输出方式。
 
 ## 推荐安装（日用路径）
 
 适用：Ubuntu 24.04 + GNOME + Fcitx5。当前 PTT 热键监听仍以 X11 为主。
 
-已经完成首次依赖和模型安装时，日常更新直接运行：
+首次安装和日常更新都直接运行：
 
 ```bash
 ./deploy.sh
 ```
 
-脚本保留交互选择：直接回车默认开启 AI，模式直接回车默认选择 `punctuation`。也可以输入 `n` 关闭 AI，或选择其他模式；非交互运行可通过环境变量配置：
+脚本会检查系统包、Python 运行时以及 streaming/final/标点模型，只安装缺失项；
+已经安装完整的依赖不会重复安装或下载。首次安装可能需要输入 sudo 密码。
+
+脚本默认不启用 legacy AI 纠错，直接回车即可跳过；需要实验旧的重写路径时回答 `y`，
+再继续选择纠错模式、模型和超时。非交互运行可通过环境变量配置：
 
 - `punctuation`：只调整标点和中英文空格，默认推荐。
 - `aggressive`：允许修正错字和英文词，可能改变原意。
@@ -31,14 +36,12 @@ bash native/build.sh
 bash native/install.sh
 fcitx5 -r
 
-# 2. 安装中英双语实时识别后端
+# 2. 一次安装完整生产 ASR 栈：
+#    streaming Paraformer + offline final Paraformer + 本地标点模型
 bash scripts/09-setup-sherpa.sh
 
-# 3. 可选：安装松键后的二次识别模型（默认关闭，先用真人录音 A/B）
-bash scripts/11-setup-quality.sh
-
-# 4. DeepSeek 后处理（默认开启；安全模式只允许标点/空格）
-#    在 .env 里设 VOICEIME_LLM_ENABLED=0 可关闭
+# 4. DeepSeek 后处理仅供 legacy 模式实验，preedit 默认路径不依赖它
+#    需要时才在 .env / 环境变量里启用 VOICEIME_LLM_ENABLED=1
 #    在项目根目录创建权限为 600 的 .env：
 #    DEEPSEEK_API_KEY='...'
 #    DEEPSEEK_BASE_URL='https://api.deepseek.com/anthropic'
@@ -60,12 +63,65 @@ journalctl --user -u voiceime-corrector -f
 
 ### 使用
 
-- **按住右 Alt**：开始说话，识别文字以 Fcitx 预编辑文本实时显示。
-- **松开右 Alt**：结束本句。AI 在预编辑区内补齐标点，再把整句一次性提交，因此不会依赖退格重写，也不会把“原文 + 修正文”重复输入。FireRedASR2 默认关闭（本机真人样本中 FireRed 的中英混合结果更差，只应用 `VOICEIME_FINAL_ENABLED=1` 显式开启做 A/B）。LLM 后处理默认开启，`punctuation` 安全模式只接受标点/空格变化；任何中文、数字或英文实词变化都会被拒绝并保留 ASR 原文。API 失败时仍会补一个句末句号；想要更激进的纠错请设 `VOICEIME_LLM_MODE=aggressive`，想要完全关闭设 `VOICEIME_LLM_ENABLED=0`。
+- **按住右 Alt**：开始说话，实时识别结果显示为 Fcitx preedit，不反复修改应用正文。
+- **松开右 Alt**：结束本句。最多等待 1.2 秒的 offline Paraformer final；随后应用词库规范化和本地安全标点，最后只 commit 一次。超过 10 秒的长句、final 超时、上一条 final 仍在运行时会直接使用 streaming 结果。
+- legacy 模式（`VOICEIME_OUTPUT_MODE` 设为 `preedit` 以外的值）仍保留 FireRedASR2 + LLM 的旧重写路径，但默认关闭，需要显式设 `VOICEIME_LLM_ENABLED=1` 才会启用（`punctuation` 安全模式只接受标点/空格变化，实词变化会被拒绝并保留 ASR 原文；API 失败时仍会补一个句末句号）。
 - 屏幕提示：录音时在当前活动显示器下方居中显示动态声波；AI 后处理显示“纠错中”，结束后短暂显示“纠错完成”“纠错失败”或“纠错超时”。提示窗不会获取键盘焦点。
 - `Ctrl+Alt+V`：免手持开始/停止。
 - `Ctrl+Alt+B`：结束当前听写。
 - `./voiceime-reset`：异常时强制清理引擎和录音进程。
+
+### PR #6：preedit + bounded final 架构
+
+这版解决旧链路最难处理的问题：旧实现会把 streaming partial 直接写入应用正文，
+final/LLM 再用 Backspace 或 surrounding-text 回删改写。不同 GTK、Qt、Electron、
+终端对 late rewrite 行为不一致，曾出现“旧文本没有删掉，新文本又追加”的情况。
+
+PR #6 改成：
+
+```text
+实时 streaming Paraformer
+        ↓
+Fcitx preedit（只是预览，不进应用正文）
+        ↓ 松键
+offline Paraformer large（最多等 1.2 秒）
+        ↓
+确定性 glossary correction
+        ↓
+本地 punctuation model + semantic guard
+        ↓
+一次 CommitString
+```
+
+保护规则：
+
+- final 超过 1.2 秒：立即回退 streaming；
+- 语音超过 10 秒：不启动 offline final；
+- 同一时间最多一个 final inference，不允许积压；
+- 下一句 PTT 已经开始：停止等待上一句 final；
+- 焦点/输入框/session 改变：最终提交 fail closed；
+- final/punctuation 模型缺失：仍可正常使用 streaming fallback。
+
+### 中英混输词库
+
+不更换现有 Paraformer，也不改中文识别链路。当前 streaming ASR 的每次 partial/final
+结果只在上屏前经过一次英文词库规范化；中文字符不会被词库改写。
+
+内置词库覆盖：
+- 前端、后端、DevOps、Git/GitHub、数据库、AI 常用词；
+- Stripe、Linear、Vercel、AWS；
+- Henry Schein、Darby Dental、DC Dental、Patterson Dental、Benco Dental 等牙科供应商/品牌。
+
+个人常用词可以直接添加：
+
+```bash
+./voiceime-hotwords add "MyProject" "Customer Brand" "New Dental Product"
+./voiceime-hotwords list
+./voiceime-hotwords remove "MyProject"
+```
+
+个人词保存在 `~/.config/voiceime/hotwords.txt`。修改后命令会重启 VoiceIME，
+新词立即参与英文规范化。
 
 ### 为什么不再默认使用 Vosk
 
