@@ -25,6 +25,22 @@ class GlossaryTests(unittest.TestCase):
         for expected in ("Darby Dental", "Henry Schein", "DC Dental"):
             self.assertIn(expected.casefold(), folded)
 
+    def test_priority_profile_has_user_domain_terms(self):
+        terms = M["read_terms"](HOTWORDS / "priority.txt")
+        folded = {term.casefold() for term in terms}
+        for expected in (
+            "GitHub Actions",
+            "Stripe",
+            "Linear",
+            "Vercel",
+            "AWS",
+            "Henry Schein",
+            "Darby Dental",
+            "DC Dental",
+            "FinalRecognizer",
+        ):
+            self.assertIn(expected.casefold(), folded)
+
     def test_programming_glossary_has_common_code_switch_terms(self):
         terms = M["read_terms"](HOTWORDS / "programming.txt")
         folded = {term.casefold() for term in terms}
