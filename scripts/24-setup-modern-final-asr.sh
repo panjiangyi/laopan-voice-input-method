@@ -21,7 +21,7 @@ download() {
   rm -f "$tmp"
 }
 
-python3 -m pip install --user --break-system-packages -U sherpa-onnx   || python3 -m pip install --user -U sherpa-onnx
+python3 -m pip install --user --break-system-packages -U sherpa-onnx numpy || python3 -m pip install --user -U sherpa-onnx numpy
 
 QWEN="sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"
 FUN="sherpa-onnx-funasr-nano-int8-2025-12-30"
