@@ -90,6 +90,10 @@ class FinalRecognizerConfigTests(unittest.TestCase):
 
 
 class PreeditFinalTests(unittest.TestCase):
+    class Identity:
+        def correct(self, text):
+            return text
+
     def test_queued_next_utterance_skips_final_wait(self):
         calls = []
 
@@ -119,7 +123,7 @@ class PreeditFinalTests(unittest.TestCase):
             ):
                 result = fn(
                     "s1", 1, "重启 system d", b"x" * 32000,
-                    Final(), Glossary(), Punctuation(), executor,
+                    Final(), Glossary(), self.Identity(), Punctuation(), executor,
                 )
         self.assertEqual(result, "重启 systemd。")
         self.assertEqual(calls, [])
@@ -149,7 +153,7 @@ class PreeditFinalTests(unittest.TestCase):
             ):
                 result = fn(
                     "s1", 1, "长句实时结果", b"x" * (16000 * 2 * 2),
-                    Final(), Identity(), Identity(), executor,
+                    Final(), Identity(), Identity(), Identity(), executor,
                 )
         self.assertEqual(result, "长句实时结果")
         self.assertEqual(calls, [])
@@ -186,6 +190,43 @@ class PreeditFinalTests(unittest.TestCase):
                 )
         self.assertEqual(result, "第二句实时结果")
         self.assertEqual(calls, [])
+
+    def test_number_normalization_runs_before_punctuation(self):
+        class Final:
+            recognizer = object()
+            def transcribe(self, _pcm):
+                return "版本号v一点三点七价格是十九点九九美元"
+
+        class Identity:
+            def correct(self, text):
+                return text
+
+        class Numbers:
+            def correct(self, text):
+                return text.replace(
+                    "v一点三点七价格是十九点九九美元",
+                    "v1.3.7价格是19.99美元",
+                )
+
+        class Punctuation:
+            def correct(self, text):
+                return text + "。"
+
+        fn = ENGINE["_best_final_text"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.dict(
+                fn.__globals__,
+                current_session="s1",
+                start_request=1,
+                FINAL_MAX_WAIT_SEC=1.2,
+                FINAL_MAX_AUDIO_SEC=10.0,
+                final_inflight=None,
+            ):
+                result = fn(
+                    "s1", 1, "版本号实时结果", b"x" * 32000,
+                    Final(), Identity(), Numbers(), Punctuation(), executor,
+                )
+        self.assertEqual(result, "版本号v1.3.7价格是19.99美元。")
 
     def test_fast_final_is_glossary_corrected_before_commit(self):
         class Final:
