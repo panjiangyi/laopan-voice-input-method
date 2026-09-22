@@ -1,8 +1,7 @@
 # VoiceIME — Ubuntu 中文 / 中英混合语音输入
 
-> 当前推荐版本：Sherpa 双语 Paraformer 流式识别（真人样本当前最优）。
-> Zipformer hotword 路径保留为实验，但不会自动替换生产识别器。
-> FireRedASR2 二次识别默认关闭，DeepSeek 后处理可选，最终通过 Fcitx5 原生提交。
+> 当前推荐版本：Sherpa 双语流式识别 + FireRedASR2 可选二次识别（默认关闭）+
+> DeepSeek API 文本纠错（可选）+ Fcitx5 原生提交。
 > 原 Vosk/nerd-dictation 路径保留为兼容/回归测试，不再作为默认日用后端。
 
 ## 推荐安装（日用路径）
@@ -32,7 +31,7 @@ bash native/build.sh
 bash native/install.sh
 fcitx5 -r
 
-# 2. 安装中英双语实时识别后端（生产默认 Paraformer）
+# 2. 安装中英双语实时识别后端
 bash scripts/09-setup-sherpa.sh
 
 # 3. 可选：安装松键后的二次识别模型（默认关闭，先用真人录音 A/B）
@@ -81,40 +80,6 @@ journalctl --user -u voiceime-corrector -f
 ### 体验目标
 
 当前目标是把日常中文与中英混合口述做到“可以替代大部分键盘输入”的 Alpha。是否达到“豆包输入法 80%”必须用同一批真人录音做 A/B 基准，不能只靠主观描述。后续以首字延迟、最终纠错延迟、中文 CER、中英 code-switch WER、连续 100 次 PTT 无卡死率作为验收指标。
-
-### 中英混输领域词库
-
-项目维护三套内置领域词库，并在启动前合并：
-
-- `hotwords/programming.txt`：前端、后端、Git/GitHub、数据库、DevOps、AI、VoiceIME。
-- `hotwords/work-tools.txt`：Stripe、Linear、Vercel、AWS 及常用子产品。
-- `hotwords/dental.txt`：美国牙科供应商、品牌、产品和常用牙科术语。
-
-Zipformer contextual-bias 路径经过 30 条真人录音 A/B 后没有达到上线门槛：
-当前 Paraformer 的内容 CER / 中文 CER / 英文 token recall 分别为
-12.23% / 8.22% / 58.54%；Zipformer+hotwords 最好一组（score=1.5）为
-16.51% / 9.54% / 36.59%。因此生产流式识别继续固定使用 Paraformer。
-Zipformer 仅保留为实验路径，不能为了词库牺牲现有中英文整体准确率。
-
-个人词库放在：
-
-```text
-~/.config/voiceime/hotwords.txt
-```
-
-也可以直接用命令维护；修改后会重新生成合并词表并重启输入服务：
-
-```bash
-./voiceime-hotwords add "Henry Schein" "Darby Dental" "Stripe Checkout"
-./voiceime-hotwords add "MyProject" "MyCompany"
-./voiceime-hotwords list
-./voiceime-hotwords remove "MyProject"
-./voiceime-hotwords rebuild
-```
-
-实际传给 Sherpa 的合并文件是 `hotwords/compiled.txt`，它由脚本生成、不提交
-到 Git。默认 hotword 分值通过 `VOICEIME_HOTWORDS_SCORE` 控制，识别后端通过
-`VOICEIME_ASR_BACKEND=auto|paraformer|zipformer-hotwords` 控制。
 
 ### 用真人录音评测
 
