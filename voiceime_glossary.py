@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PRIORITY = ROOT / "hotwords" / "priority.txt"
 ALIASES = ROOT / "hotwords" / "aliases.tsv"
+CONTEXTUAL_ALIASES = ROOT / "hotwords" / "contextual-aliases.tsv"
 BUILTIN_GLOSSARIES = (
     ROOT / "hotwords" / "programming.txt",
     ROOT / "hotwords" / "work-tools.txt",
@@ -67,6 +68,36 @@ def load_aliases() -> dict[str, str]:
         if key and canonical.strip():
             aliases[key] = canonical.strip()
     return aliases
+
+
+
+def load_contextual_aliases() -> list[tuple[str, str, tuple[str, ...]]]:
+    """Load exact mixed-script ASR artifacts guarded by nearby context.
+
+    Some English product names are emitted as ordinary Chinese words
+    (for example "Linear" -> "力量"). Replacing those globally would corrupt
+    valid Chinese, so every entry must declare nearby technical context that
+    makes the replacement safe enough to apply.
+    """
+    out: list[tuple[str, str, tuple[str, ...]]] = []
+    if not CONTEXTUAL_ALIASES.is_file():
+        return out
+    for raw in CONTEXTUAL_ALIASES.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        parts = [part.strip() for part in raw.split("\t")]
+        if len(parts) < 3:
+            continue
+        alias, canonical, raw_context = parts[0], parts[1], parts[2]
+        triggers = tuple(
+            item.strip()
+            for item in re.split(r"[|,]", raw_context)
+            if item.strip()
+        )
+        if alias and canonical and triggers:
+            out.append((alias, canonical, triggers))
+    return out
 
 
 def _dedupe(terms: list[str]) -> list[str]:
@@ -151,10 +182,16 @@ class GlossaryCorrector:
         terms: list[str] | None = None,
         aliases: dict[str, str] | None = None,
         exact_terms: list[str] | None = None,
+        contextual_aliases: list[tuple[str, str, tuple[str, ...]]] | None = None,
     ) -> None:
         raw_terms = terms if terms is not None else load_terms()
         raw_exact = exact_terms if exact_terms is not None else load_exact_terms()
         self.aliases = aliases if aliases is not None else load_aliases()
+        self.contextual_aliases = (
+            contextual_aliases
+            if contextual_aliases is not None
+            else load_contextual_aliases()
+        )
         self.exact: dict[str, str] = {}
         for text in raw_exact:
             signature = _ascii_signature(text)
@@ -262,8 +299,76 @@ class GlossaryCorrector:
                 i += replacement_width
         return " ".join(out) + trailing
 
+
+    @staticmethod
+    def _has_context(window: str, trigger: str) -> bool:
+        if not trigger:
+            return False
+        # ASCII technical tokens need boundaries so "PR" does not match the
+        # start of an unrelated English word. CJK/mixed triggers use exact
+        # substring matching.
+        if trigger.isascii():
+            pattern = (
+                r"(?<![A-Za-z0-9_])"
+                + re.escape(trigger)
+                + r"(?![A-Za-z0-9_])"
+            )
+            return re.search(pattern, window, re.IGNORECASE) is not None
+        return trigger.casefold() in window.casefold()
+
+    @staticmethod
+    def _with_ascii_boundaries(
+        text: str, start: int, end: int, replacement: str
+    ) -> str:
+        """Prevent two repaired ASCII terms from being glued together."""
+        if not replacement:
+            return replacement
+        prev_ch = text[start - 1] if start > 0 else ""
+        next_ch = text[end] if end < len(text) else ""
+        if (
+            prev_ch
+            and prev_ch.isascii()
+            and prev_ch.isalnum()
+            and replacement[0].isascii()
+            and replacement[0].isalnum()
+        ):
+            replacement = " " + replacement
+        if (
+            next_ch
+            and next_ch.isascii()
+            and next_ch.isalnum()
+            and replacement[-1].isascii()
+            and replacement[-1].isalnum()
+        ):
+            replacement += " "
+        return replacement
+
+    def _correct_contextual_aliases(self, text: str) -> str:
+        # Entries are intentionally ordered. A narrow mixed token such as
+        # "ticke值" can first become "ticket", which then provides the
+        # technical context needed to safely repair "力量" -> "Linear".
+        for alias, canonical, triggers in self.contextual_aliases:
+            pattern = re.compile(re.escape(alias), re.IGNORECASE)
+            cursor = 0
+            while cursor < len(text):
+                match = pattern.search(text, cursor)
+                if match is None:
+                    break
+                left = max(0, match.start() - 24)
+                right = min(len(text), match.end() + 24)
+                window = text[left:right]
+                if not any(self._has_context(window, t) for t in triggers):
+                    cursor = match.end()
+                    continue
+                replacement = self._with_ascii_boundaries(
+                    text, match.start(), match.end(), canonical
+                )
+                text = text[:match.start()] + replacement + text[match.end():]
+                cursor = match.start() + len(replacement)
+        return text
+
     def correct(self, text: str) -> str:
-        if not text or not self.terms:
+        if not text:
             return text
         out: list[str] = []
         last = 0
@@ -272,7 +377,7 @@ class GlossaryCorrector:
             out.append(self._correct_run(match.group(0)))
             last = match.end()
         out.append(text[last:])
-        return "".join(out)
+        return self._correct_contextual_aliases("".join(out))
 
 
 if __name__ == "__main__":
