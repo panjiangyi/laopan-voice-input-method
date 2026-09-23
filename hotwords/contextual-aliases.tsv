@@ -1,0 +1,9 @@
+# Exact mixed-script ASR artifacts -> canonical term -> nearby context.
+# These replacements are intentionally NOT global. They only fire when one of
+# the pipe-separated context terms appears within a small window.
+#
+# Keep observed artifacts here; do not add speculative Chinese homophones.
+
+ticke值	ticket	PR|URL|Linear|issue
+ticke 值	ticket	PR|URL|Linear|issue
+力量	Linear	ticket|issue|sprint|cycle|backlog|workspace
