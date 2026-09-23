@@ -108,5 +108,20 @@ class GlossaryCorrectorTests(unittest.TestCase):
         self.assertEqual(c.correct("openai agents sdk"), "OpenAI Agents SDK")
 
 
+    def test_observed_linear_ticket_pr_url_sample(self):
+        source = "每个p r的力量ticke值和p r u l也要附上"
+        self.assertEqual(
+            self.c.correct(source),
+            "每个PR的Linear ticket和PR URL也要附上",
+        )
+
+    def test_contextual_chinese_alias_is_not_global(self):
+        self.assertEqual(self.c.correct("团结就是力量"), "团结就是力量")
+        self.assertEqual(
+            self.c.correct("AI 的力量很重要"),
+            "AI 的力量很重要",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
