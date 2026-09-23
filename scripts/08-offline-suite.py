@@ -3,7 +3,7 @@
 
 This replaces the legacy Vosk/set-overlap benchmark. It runs the same default
 recognition stack as voiceime-engine:
-  sherpa-onnx streaming Paraformer -> optional FireRedASR2 final pass
+  streaming Paraformer -> bounded offline final -> glossary -> punctuation
 
 Metrics:
   - exact match after normalization
@@ -19,10 +19,13 @@ import csv
 import re
 import runpy
 import sys
+import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 ENGINE = runpy.run_path(str(ROOT / "voiceime-engine"))
 SherpaRecognizer = ENGINE["SherpaRecognizer"]
 FinalRecognizer = ENGINE["FinalRecognizer"]
@@ -116,29 +119,39 @@ def read_pcm16_mono_16k(path: Path) -> bytes:
         return wf.readframes(wf.getnframes())
 
 
-def recognize_current(asr, final_asr, pcm: bytes) -> tuple[str, str]:
+def recognize_current(asr, final_asr, pcm: bytes, *, glossary=None,
+                      punctuation=None, executor=None) -> tuple[str, str]:
     stream = asr.create_stream()
-    chunk_bytes = 3200 * 2  # 100 ms @ 16kHz, int16 mono
+    chunk_bytes = 1600 * 2  # 100 ms @ 16kHz, int16 mono
     for start in range(0, len(pcm), chunk_bytes):
         asr.accept_pcm(stream, pcm[start:start + chunk_bytes])
         asr.decode_ready(stream)
     streaming = asr.finalize(stream).strip()
 
-    final = streaming
+    glossary = glossary if glossary is not None else ENGINE["GlossaryCorrector"]()
+    punctuation = punctuation if punctuation is not None else ENGINE["PunctuationRestorer"]()
+    finish = ENGINE["_best_final_text"]
+    # Use the production selection policy without touching the desktop or its
+    # runtime state files. runpy functions retain their own globals dictionary.
+    state = finish.__globals__
+    saved = {key: state[key] for key in ("current_session", "start_request", "set_state")}
+    state.update(current_session="benchmark", start_request=1, set_state=lambda _value: None)
+    owned_executor = executor is None
+    executor = executor if executor is not None else ThreadPoolExecutor(max_workers=1)
     try:
-        refined = final_asr.transcribe(pcm)
-        if refined:
-            final = refined
-    except Exception as ex:
-        print(
-            f"WARN: FireRed second pass failed, using streaming result: {ex!r}",
-            file=sys.stderr,
-        )
+        final = finish("benchmark", 1, glossary.correct(streaming), pcm,
+                       final_asr, glossary, punctuation, executor)
+    finally:
+        state.update(saved)
+        if owned_executor:
+            executor.shutdown(wait=True)
     return streaming, final
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--require-final", action="store_true",
+                        help="fail if the requested final model cannot load")
     parser.add_argument(
         "--manifest",
         type=Path,
@@ -163,6 +176,11 @@ def main() -> int:
     print("Loading current VoiceIME recognizers...")
     asr = SherpaRecognizer()
     final_asr = FinalRecognizer()
+    if args.require_final and final_asr.recognizer is None:
+        parser.error("requested final recognizer is unavailable")
+    glossary = ENGINE["GlossaryCorrector"]()
+    punctuation = ENGINE["PunctuationRestorer"]()
+    executor = ThreadPoolExecutor(max_workers=1)
 
     rows = []
     total_edits = 0
@@ -183,7 +201,12 @@ def main() -> int:
             continue
 
         pcm = read_pcm16_mono_16k(wav)
-        streaming, final = recognize_current(asr, final_asr, pcm)
+        started = time.monotonic()
+        streaming, final = recognize_current(
+            asr, final_asr, pcm, glossary=glossary,
+            punctuation=punctuation, executor=executor,
+        )
+        elapsed = time.monotonic() - started
         distance, rate = cer(expected, final)
         raw_distance, raw_rate = raw_cer(expected, final)
         ref_len = len(normalize(expected))
@@ -211,6 +234,8 @@ def main() -> int:
             "expected": expected,
             "streaming": streaming,
             "final": final,
+            "elapsed_sec": f"{elapsed:.3f}",
+            "audio_sec": f"{len(pcm) / 32000:.3f}",
             "edit_distance": distance,
             "ref_chars": ref_len,
             "cer": f"{rate:.6f}",
@@ -224,6 +249,7 @@ def main() -> int:
         print(f"       final={final}")
         print(f"       edit_distance={distance} CER={rate:.2%} exact={exact}")
 
+    executor.shutdown(wait=True)
     if not rows:
         print("No WAV cases found; nothing evaluated.", file=sys.stderr)
         return 2
@@ -234,6 +260,7 @@ def main() -> int:
             fh,
             fieldnames=[
                 "case", "expected", "streaming", "final",
+                "elapsed_sec", "audio_sec",
                 "edit_distance", "ref_chars", "cer", "exact",
                 "raw_cer", "english_errors", "english_reference",
                 "number_errors", "number_reference",

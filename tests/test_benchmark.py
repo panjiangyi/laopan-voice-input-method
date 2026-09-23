@@ -2,12 +2,42 @@
 import runpy
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = runpy.run_path(str(ROOT / "scripts/08-offline-suite.py"))
 
 
 class BenchmarkMetricTests(unittest.TestCase):
+    def test_benchmark_uses_production_duration_gate_and_postprocessing(self):
+        class Streaming:
+            def create_stream(self): return object()
+            def accept_pcm(self, stream, pcm): pass
+            def decode_ready(self, stream): pass
+            def finalize(self, stream): return "poll request"
+
+        class Final:
+            recognizer = object()
+            def transcribe(self, pcm):
+                raise AssertionError("long recording must skip final")
+
+        class Glossary:
+            def correct(self, text): return text.replace("poll", "pull")
+
+        class Punctuation:
+            def correct(self, text): return text + "。"
+
+        state = SUITE["ENGINE"]["_best_final_text"].__globals__
+        with patch.dict(state, FINAL_MAX_AUDIO_SEC=0.5, final_inflight=None):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                raw, final = SUITE["recognize_current"](
+                    Streaming(), Final(), bytes(32000), glossary=Glossary(),
+                    punctuation=Punctuation(), executor=executor,
+                )
+        self.assertEqual(raw, "poll request")
+        self.assertEqual(final, "pull request。")
+
     def test_reordered_sentence_is_not_100_percent(self):
         distance, rate = SUITE["cer"]("我喜欢你", "你喜欢我")
         self.assertGreater(distance, 0)

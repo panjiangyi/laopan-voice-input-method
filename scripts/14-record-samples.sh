@@ -144,6 +144,20 @@ PROMPTS=(
     "最后一条样本用于测试收尾，录完以后我们开始跑离线识别评估。"
 )
 
+# Optional one-sentence-per-line corpus. Keep the default corpus for existing
+# recording sessions; callers can use a dedicated session for a new corpus.
+if [ -n "${PROMPTS_FILE:-}" ]; then
+    if [ ! -r "$PROMPTS_FILE" ]; then
+        echo "[error] cannot read prompts: $PROMPTS_FILE" >&2
+        exit 1
+    fi
+    mapfile -t PROMPTS < <(sed '/^[[:space:]]*$/d; /^[[:space:]]*#/d' "$PROMPTS_FILE")
+    if [ "${#PROMPTS[@]}" -eq 0 ]; then
+        echo "[error] prompt file is empty" >&2
+        exit 1
+    fi
+fi
+
 require_cmd ffmpeg
 require_cmd pactl
 

@@ -2,8 +2,7 @@
 
 > PR #6 推荐架构：Sherpa 双语 streaming Paraformer 实时 preedit →
 > offline Paraformer large 快速 final → 领域词库确定性纠正 →
-> 本地安全标点 → Fcitx5 一次性 commit。
-> 旧 FireRed/LLM late-rewrite 路径保留兼容，不再作为默认输出方式。
+> 本地安全标点 → 可选 DeepSeek 纠错 → Fcitx5 一次性 commit。
 
 ## 推荐安装（日用路径）
 
@@ -18,11 +17,12 @@
 脚本会检查系统包、Python 运行时以及 streaming/final/标点模型，只安装缺失项；
 已经安装完整的依赖不会重复安装或下载。首次安装可能需要输入 sudo 密码。
 
-脚本默认不启用 legacy AI 纠错，直接回车即可跳过；需要实验旧的重写路径时回答 `y`，
-再继续选择纠错模式、模型和超时。非交互运行可通过环境变量配置：
+脚本默认不启用 DeepSeek 纠错；选择 `y` 后，默认使用 `aggressive` 模式纠正中英文实词，
+随后选择模型和超时。部署时会用固定测试句验证 API，失败则不刷新服务配置。
+非交互运行可通过环境变量配置：
 
-- `punctuation`：只调整标点和中英文空格，默认推荐。
-- `aggressive`：允许修正错字和英文词，可能改变原意。
+- `aggressive`：允许修正错字和英文词，启用时的默认模式；可能改变原意。
+- `punctuation`：只调整标点和中英文空格，不会修正识别错词。
 - DeepSeek 模型以及引擎等待纠错结果的超时时间。
 
 CI 或其他非交互环境可以用 `VOICEIME_LLM_ENABLED`、
@@ -40,8 +40,8 @@ fcitx5 -r
 #    streaming Paraformer + offline final Paraformer + 本地标点模型
 bash scripts/09-setup-sherpa.sh
 
-# 4. DeepSeek 后处理仅供 legacy 模式实验，preedit 默认路径不依赖它
-#    需要时才在 .env / 环境变量里启用 VOICEIME_LLM_ENABLED=1
+# 4. 可选 DeepSeek 后处理在 preedit 最终提交前运行
+#    需要时在部署时选择 y，或设置 VOICEIME_LLM_ENABLED=1
 #    在项目根目录创建权限为 600 的 .env：
 #    DEEPSEEK_API_KEY='...'
 #    DEEPSEEK_BASE_URL='https://api.deepseek.com/anthropic'
@@ -64,7 +64,7 @@ journalctl --user -u voiceime-corrector -f
 ### 使用
 
 - **按住右 Alt**：开始说话，实时识别结果显示为 Fcitx preedit，不反复修改应用正文。
-- **松开右 Alt**：结束本句。最多等待 1.2 秒的 offline Paraformer final；随后应用词库规范化和本地安全标点，最后只 commit 一次。超过 10 秒的长句、final 超时、上一条 final 仍在运行时会直接使用 streaming 结果。
+- **松开右 Alt**：结束本句。最多等待 1.2 秒的 offline Paraformer final；随后应用词库规范化和本地安全标点。如启用 DeepSeek，还会等待其纠错结果（默认最多 15 秒），最后只 commit 一次。超过 10 秒的长句、final 超时、上一条 final 仍在运行时会直接使用 streaming 结果，并仍可交给 DeepSeek 纠错。
 - legacy 模式（`VOICEIME_OUTPUT_MODE` 设为 `preedit` 以外的值）仍保留 FireRedASR2 + LLM 的旧重写路径，但默认关闭，需要显式设 `VOICEIME_LLM_ENABLED=1` 才会启用（`punctuation` 安全模式只接受标点/空格变化，实词变化会被拒绝并保留 ASR 原文；API 失败时仍会补一个句末句号）。
 - 屏幕提示：录音时在当前活动显示器下方居中显示动态声波；AI 后处理显示“纠错中”，结束后短暂显示“纠错完成”“纠错失败”或“纠错超时”。提示窗不会获取键盘焦点。
 - `Ctrl+Alt+V`：免手持开始/停止。

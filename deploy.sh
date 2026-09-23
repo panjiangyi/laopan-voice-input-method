@@ -19,16 +19,16 @@ die()  { printf 'build-and-start: %s\n' "$*" >&2; exit 1; }
 # Collect all correction choices in one place. Environment variables remain
 # the non-interactive interface for automation; a terminal gets friendly
 # prompts with conservative defaults. The preedit pipeline does punctuation
-# locally, so legacy AI correction stays off unless explicitly requested.
+# locally, so DeepSeek correction stays off unless explicitly requested.
 LLM_ENABLED="${VOICEIME_LLM_ENABLED:-0}"
-LLM_MODE="${VOICEIME_LLM_MODE:-punctuation}"
+LLM_MODE="${VOICEIME_LLM_MODE:-aggressive}"
 LLM_TIMEOUT="${VOICEIME_LLM_TIMEOUT:-15.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-v4-flash}"
 
 if [ -t 0 ]; then
-  step "Configure optional legacy AI correction"
-  printf '%s\n' 'Preedit mode already adds local punctuation; legacy AI is only for experimenting with the old rewrite path.'
-  read -r -p "Enable legacy AI correction after each utterance? [y/N] " answer
+  step "Configure optional DeepSeek correction"
+  printf '%s\n' 'When enabled, DeepSeek corrects the final recognition before it is committed to the application.'
+  read -r -p "Enable DeepSeek correction after each utterance? [y/N] " answer
   case "${answer:-N}" in
     [Yy]*) LLM_ENABLED=1 ;;
     *) LLM_ENABLED=0 ;;
@@ -37,10 +37,10 @@ if [ -t 0 ]; then
   if [ "$LLM_ENABLED" = 1 ]; then
     printf '%s\n' \
       'Correction mode:' \
-      '  1) punctuation — only punctuation/spacing (default)' \
-      '  2) aggressive  — may repair words, but can change meaning'
-    read -r -p "Choose [1]: " answer
-    case "${answer:-1}" in
+      '  1) punctuation — only punctuation/spacing; does not fix words' \
+      '  2) aggressive  — repair Chinese/English recognition errors (default; may change meaning)'
+    read -r -p "Choose [2]: " answer
+    case "${answer:-2}" in
       1) LLM_MODE=punctuation ;;
       2) LLM_MODE=aggressive ;;
       *) die "invalid correction mode: $answer" ;;
@@ -58,6 +58,10 @@ case "$LLM_ENABLED" in 0|1) ;; *) die "VOICEIME_LLM_ENABLED must be 0 or 1" ;; e
 case "$LLM_MODE" in punctuation|aggressive) ;; *) die "invalid VOICEIME_LLM_MODE: $LLM_MODE" ;; esac
 [[ "$LLM_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "LLM timeout must be a positive number"
 [[ "$DEEPSEEK_MODEL" =~ ^[A-Za-z0-9._:/+-]+$ ]] || die "model name contains unsupported characters"
+
+if [ "$LLM_ENABLED" = 1 ] && [ "${VOICEIME_LLM_DISABLED:-0}" = 1 ]; then
+  die "DeepSeek was enabled but VOICEIME_LLM_DISABLED=1 blocks all calls; unset the kill switch first"
+fi
 
 export VOICEIME_LLM_ENABLED="$LLM_ENABLED"
 export VOICEIME_LLM_MODE="$LLM_MODE"
@@ -159,12 +163,13 @@ else
   printf '  ✓ streaming + offline final + punctuation models ready\n'
 fi
 
-# 4b. DeepSeek is legacy/optional in the preedit pipeline.
+# 4b. Optional DeepSeek runs before the one-shot preedit commit.
 step "Configure optional DeepSeek correction"
 systemctl --user disable --now voiceime-corrector.service 2>/dev/null || true
 if [ "$LLM_ENABLED" = 1 ]; then
   [ -s "$ROOT/.env" ] || die "AI correction enabled but $ROOT/.env is missing"
   grep -q '^DEEPSEEK_API_KEY=' "$ROOT/.env" || die "DEEPSEEK_API_KEY missing from .env"
+  python3 "$ROOT/scripts/15-check-deepseek.py" || die "DeepSeek API check failed; service configuration was not refreshed"
   printf '  ✓ Direct DeepSeek correction enabled: mode=%s model=%s timeout=%ss\n' \
     "$LLM_MODE" "$DEEPSEEK_MODEL" "$LLM_TIMEOUT"
 else

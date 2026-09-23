@@ -1,0 +1,20 @@
+今天先 review 登录页面，等 feedback 收齐以后再 merge。
+这个 bug 只在 production 出现，local 环境一直正常。
+我把 deadline 改到周五，你有空帮我 follow up 一下。
+先检查 GitHub 上的 workflow，再看 Vercel 的 deployment 有没有失败。
+请在 Linear 建一个 issue，标题写支付回调重复执行。
+Claude Code 负责修改，Codex 负责检查，最后我来确认。
+前端用 TypeScript，后端用 Python，数据库选 PostgreSQL。
+这个 API 返回了 HTTP 错误，先检查 JSON 里面的 message。
+Stripe 的 webhook 收到了，但是 checkout 页面还在 loading。
+比较一下 Henry Schein 和 Benco Dental，同一个产品的 shipping fee 差多少。
+请把 browser tab 切回来，我要复制 terminal 里的 error message。
+这次先做 code review，不要顺手 refactor，也不要修改 public interface。
+我原来想用 Redis 做 cache，后来发现问题在 database connection，先把 connection pool 的设置检查一遍，再决定要不要调整 timeout。
+客户说 checkout 已经成功，但是 dashboard 里没有 order，我们需要对照 payment status 和 webhook log，确认到底是哪一步没有完成。
+这个方案先保留，等我明天确认需求以后再决定。
+这句话没有英文，用来检查更换模型以后中文识别有没有退步。
+我在 Notion 整理 meeting notes，稍后把 action items 发给大家。
+这个 Docker container 启动以后，health check 一直没有通过。
+先用 staging 验证 rollback，再安排 production release，别把两个 environment 搞混。
+今天的重点是减少等待时间，同时保留完整的识别结果。

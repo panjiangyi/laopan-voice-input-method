@@ -104,6 +104,35 @@ def _with_env(values: dict):
 
 
 class LLMCorrectorTests(unittest.TestCase):
+    def test_preedit_final_really_calls_deepseek_and_returns_corrected_words(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+        finish = ENGINE["_best_final_text"]
+        identity = SimpleNamespace(correct=lambda text: text)
+        for enabled, responses, expected in (
+            ("1", [{"content": [{"type": "text", "text": "检查 GitHub Actions。"}]}], "检查 GitHub Actions。"),
+            ("0", [], "检查 get up actions"),
+            ("1", [], "检查 get up actions"),
+        ):
+            with self.subTest(enabled=enabled, expected=expected), StubServer(responses) as srv:
+                with _with_env({
+                    "VOICEIME_LLM_ENABLED": enabled,
+                    "VOICEIME_LLM_DISABLED": "0",
+                    "VOICEIME_LLM_MODE": "aggressive",
+                    "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{srv.port}",
+                    "VOICEIME_LLM_TIMEOUT": "2",
+                }):
+                    corrector = Corrector()
+                    with patch.dict(finish.__globals__, current_session="test", start_request=1,
+                                    terminate=False, final_inflight=None,
+                                    set_correction_state=lambda *args: None):
+                        with ThreadPoolExecutor(max_workers=1) as executor:
+                            result = finish("test", 1, "检查 get up actions", b"",
+                                            SimpleNamespace(recognizer=None), identity,
+                                            identity, executor, llm=corrector)
+                self.assertEqual(result, expected)
+                self.assertEqual(len(srv.requests), int(enabled))
+
     def test_probe_then_correct_sends_expected_payload(self):
         with StubServer([
             {"content": [{"type": "text", "text": "今天，天气很好。"}]},
