@@ -225,14 +225,20 @@ class GlossaryCorrector:
 
     def _best(self, candidate: str) -> str | None:
         sig = _ascii_signature(candidate)
+        if not sig:
+            return None
+        # Exact short acronyms are safe to normalize ("p r" -> "PR");
+        # only fuzzy matching remains disabled for collision-prone <=2-char
+        # terms.
+        if len(sig) >= 2:
+            alias = self.aliases.get(sig)
+            if alias is not None:
+                return alias
+            exact = self.exact.get(sig)
+            if exact is not None:
+                return exact
         if len(sig) < 3:
             return None
-        alias = self.aliases.get(sig)
-        if alias is not None:
-            return alias
-        exact = self.exact.get(sig)
-        if exact is not None:
-            return exact
 
         ranked: list[tuple[float, float, _Term]] = []
         candidate_words = tuple(candidate.casefold().split())
